@@ -7,7 +7,7 @@
  * Ao publicar alterações, mudar APP_VERSION.
  */
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const CACHE_PREFIX = "fisio-if-";
 const CACHE_NAME = `${CACHE_PREFIX}app-${APP_VERSION}`;
 
@@ -19,6 +19,7 @@ const APP_SHELL = [
   "./assets/js/app.js",
   "./assets/js/db.js",
   "./assets/js/backup.js",
+  "./assets/js/excel.js",
   "./assets/icons/icon.svg",
 ];
 
