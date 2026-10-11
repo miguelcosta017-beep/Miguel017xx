@@ -218,6 +218,7 @@ function packageRemaining(packageRecord, usage) {
 }
 
 function packageStatus(packageRecord, usage) {
+  if (packageRecord.paymentStatus === "cancelled") return "cancelled";
   return packageRemaining(packageRecord, usage) > 0 ? "active" : "completed";
 }
 
@@ -488,7 +489,7 @@ async function renderPatientDetail(patientId) {
   const balance = sum(transactions.filter((item) => item.type === "income" && item.status === "paid"), (item) => item.amount) - sum(transactions.filter((item) => item.type === "expense" && item.status === "paid"), (item) => item.amount);
   const usage = packageUsageMap(sessions);
   const packageMap = new Map(packages.map((item) => [item.id, item]));
-  const activePackages = packages.filter((item) => packageRemaining(item, usage) > 0).length;
+  const activePackages = packages.filter((item) => packageStatus(item, usage) === "active").length;
 
   return `<section class="view patient-detail" aria-labelledby="patient-heading">
     <button class="back-button" type="button" data-action="back-to-patients"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg>Pacientes</button>
@@ -544,7 +545,7 @@ function packageCard(packageRecord, usage) {
   const status = packageStatus(packageRecord, usage);
   return `<article class="package-record compact-record">
     <span><strong>${escapeHTML(packageRecord.name || `Pacote de ${packageRecord.totalSessions} sessões`)}</strong><small>${remaining} de ${Number(packageRecord.totalSessions) || 0} disponíveis · ${escapeHTML(formatCurrency(packageRecord.pricePerSession))}/sessão · ${escapeHTML(statusLabel(packageRecord.paymentStatus))}</small><span class="package-progress" aria-label="${used} de ${Number(packageRecord.totalSessions) || 0} sessões utilizadas"><i style="--package-progress:${Math.min(100, Math.round(used / Math.max(1, Number(packageRecord.totalSessions) || 1) * 100))}%"></i></span></span>
-    <span class="package-record__actions"><span class="status-badge status-badge--${status}">${status === "completed" ? "Concluído" : "Ativo"}</span><button class="icon-button" type="button" data-action="edit-package" data-id="${escapeHTML(packageRecord.id)}" aria-label="Editar pacote"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="packages" data-id="${escapeHTML(packageRecord.id)}" aria-label="Eliminar pacote"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></span>
+    <span class="package-record__actions"><span class="status-badge status-badge--${status}">${status === "completed" ? "Concluído" : status === "cancelled" ? "Anulado" : "Ativo"}</span><button class="icon-button" type="button" data-action="edit-package" data-id="${escapeHTML(packageRecord.id)}" aria-label="Editar pacote"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="packages" data-id="${escapeHTML(packageRecord.id)}" aria-label="Eliminar pacote"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></span>
   </article>`;
 }
 
@@ -718,7 +719,7 @@ function sessionForm(session, patients, appointments, packages, sessions) {
     const remaining = packageRemaining(item, usage);
     const belongsToPatient = !selectedPatient || item.patientId === selectedPatient;
     const isCurrent = item.id === session.packageId;
-    const disabled = (!belongsToPatient || (remaining <= 0 && !isCurrent)) ? " disabled" : "";
+    const disabled = (!belongsToPatient || packageStatus(item, usage) === "cancelled" || (remaining <= 0 && !isCurrent)) ? " disabled" : "";
     const patientSuffix = selectedPatient ? "" : ` — ${patientDisplay(patientNames, item.patientId)}`;
     return `<option value="${escapeHTML(item.id)}" data-patient-id="${escapeHTML(item.patientId)}" data-price="${escapeHTML(item.pricePerSession)}" data-total="${escapeHTML(item.totalSessions)}" data-remaining="${remaining}"${selected(item.id, session.packageId)}${disabled}>${escapeHTML(`${item.name || "Pacote"} — ${remaining} disponíveis${patientSuffix}`)}</option>`;
   }).join("");
@@ -851,6 +852,7 @@ async function saveEntityForm(form) {
         const packageRecord = await getById("packages", record.packageId);
         if (!packageRecord) throw new Error("O pacote selecionado já não existe.");
         if (packageRecord.patientId !== data.patientId) throw new Error("O pacote selecionado pertence a outro paciente.");
+        if (packageRecord.paymentStatus === "cancelled") throw new Error("O pacote selecionado está anulado.");
         const used = (await getAll("sessions")).filter((item) => item.packageId === record.packageId && item.id !== id).length;
         if (used >= Number(packageRecord.totalSessions)) throw new Error("Este pacote já não tem sessões disponíveis.");
         record.value = Math.max(0, Number(packageRecord.pricePerSession) || 0);
