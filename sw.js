@@ -7,7 +7,7 @@
  * Ao publicar alterações, mudar APP_VERSION.
  */
 
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const CACHE_PREFIX = "fisio-if-";
 const CACHE_NAME = `${CACHE_PREFIX}app-${APP_VERSION}`;
 
