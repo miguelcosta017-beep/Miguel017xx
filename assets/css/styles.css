@@ -790,7 +790,8 @@ p:last-child {
 }
 
 .badge--info,
-.status-badge--draft {
+.status-badge--draft,
+.status-badge--package {
   background: var(--color-info-soft);
   color: var(--color-info);
 }
@@ -2642,6 +2643,64 @@ html[data-theme="dark"] .primary-nav {
   margin-block-start: 0.15rem;
   color: var(--color-text-soft);
   font-size: 0.66rem;
+}
+
+.package-record {
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.package-record > span:first-child {
+  flex: 1;
+}
+
+.package-record__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.package-record__actions .icon-button {
+  width: 2.1rem;
+  height: 2.1rem;
+}
+
+.package-progress {
+  display: block;
+  width: 100%;
+  max-width: 15rem;
+  height: 0.28rem;
+  margin-block-start: 0.45rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-border);
+}
+
+.package-progress i {
+  display: block;
+  width: var(--package-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary);
+}
+
+.package-total-preview {
+  display: flex;
+  min-height: 3.2rem;
+  padding: 0.7rem 0.85rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-softer);
+  color: var(--color-text-soft);
+  font-size: 0.78rem;
+}
+
+.package-total-preview strong {
+  color: var(--color-primary);
+  font-size: 1rem;
 }
 
 .clinic-tabs {
