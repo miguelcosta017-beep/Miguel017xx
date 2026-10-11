@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">FISIO IF</title>
+  <desc id="description">Monograma IF em verde-petróleo e branco</desc>
+  <defs>
+    <linearGradient id="background" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#11756d"/>
+      <stop offset="1" stop-color="#084d4a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="url(#background)"/>
+  <circle cx="256" cy="256" r="158" fill="#f7fbfa"/>
+  <circle cx="340" cy="166" r="22" fill="#27b9a8"/>
+  <path d="M166 164h40v184h-40z" fill="#0b5f5a"/>
+  <path d="M246 164h116v40h-76v39h64v38h-64v67h-40z" fill="#0b5f5a"/>
+  <path d="M151 372c65 30 146 31 211 0" fill="none" stroke="#27b9a8" stroke-linecap="round" stroke-width="18"/>
+</svg>
+
+
