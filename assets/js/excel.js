@@ -148,7 +148,7 @@ function buildSheets(input, generatedAt) {
         const used = usage.get(item.id) || 0;
         const total = Number(item.totalSessions) || 0;
         const price = Number(item.pricePerSession) || 0;
-        return [item.id, patientName(item.patientId), item.patientId, item.name, asDate(item.purchaseDate), asInteger(total), asInteger(used), asInteger(Math.max(0, total - used)), asCurrency(price), asCurrency(item.totalAmount ?? total * price), label("paymentStatus", item.paymentStatus), label("paymentMethod", item.paymentMethod), used >= total && total > 0 ? "Concluído" : "Ativo", item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)];
+        return [item.id, patientName(item.patientId), item.patientId, item.name, asDate(item.purchaseDate), asInteger(total), asInteger(used), asInteger(Math.max(0, total - used)), asCurrency(price), asCurrency(item.totalAmount ?? total * price), label("paymentStatus", item.paymentStatus), label("paymentMethod", item.paymentMethod), item.paymentStatus === "cancelled" ? "Anulado" : used >= total && total > 0 ? "Concluído" : "Ativo", item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)];
       }),
     ] },
     { name: "Agenda", rows: [
