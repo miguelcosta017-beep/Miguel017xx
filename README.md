@@ -1,4 +1,4 @@
-# FISIO IF — primeira versão offline
+# FISIO IF — versão 1.1.0 offline
 
 FISIO IF é uma aplicação web instalável (PWA), orientada primeiro ao iPhone e utilizável também no MacBook. A aplicação gere pacientes, sessões, agenda, avaliações e finanças sem conta, subscrição, servidor de dados ou sincronização.
 
@@ -14,6 +14,7 @@ Os registos ficam no `IndexedDB` do navegador de cada dispositivo. A transferên
 - avaliações clínicas;
 - visão financeira;
 - exportação integral para um ficheiro de backup;
+- exportação para um ficheiro Excel (`.xlsx`) com folhas separadas para resumo, pacientes, agenda, sessões, avaliações e finanças;
 - importação/restauro do backup;
 - interface adaptada ao iPhone e ao MacBook;
 - funcionamento offline depois do primeiro carregamento completo;
@@ -35,6 +36,7 @@ fisio-if/
     ├── js/app.js
     ├── js/db.js
     ├── js/backup.js
+    ├── js/excel.js
     └── icons/
 ```
 
@@ -61,8 +63,9 @@ Usar apenas dados fictícios durante o teste inicial.
 3. Fechar e voltar a abrir; confirmar que os registos permanecem.
 4. Depois de um carregamento completo, desligar a rede e voltar a abrir a aplicação.
 5. Exportar um backup e confirmar que o ficheiro foi guardado fora da aplicação.
-6. Num perfil de navegador ou dispositivo de teste, importar esse backup e confirmar todos os totais e registos.
-7. Criar um segundo backup depois do restauro e guardá-lo separadamente.
+6. Criar uma exportação Excel e confirmar que as seis folhas abrem corretamente.
+7. Num perfil de navegador ou dispositivo de teste, importar o backup JSON e confirmar todos os totais e registos.
+8. Criar um segundo backup depois do restauro e guardá-lo separadamente.
 
 ## Atualizações da aplicação
 
@@ -77,6 +80,8 @@ O cache contém apenas os ficheiros estáticos da aplicação. Os dados de pacie
 ## Cópias de segurança
 
 O backup exportado é a única cópia portátil e controlada pelo utilizador. Guardá-lo num local seguro e fazer cópias regulares, sobretudo antes de atualizar o sistema, limpar dados do Safari, remover a aplicação ou importar outro backup.
+
+O Excel destina-se a consulta, filtros, impressão e análise. Inclui informação clínica sensível, mas **não permite restaurar a aplicação**. Para restauro entre dispositivos é obrigatório conservar o backup integral em formato JSON.
 
 O iPhone e o MacBook mantêm bases independentes. Mesmo no modo **Combinar**, importar é um restauro controlado, não uma sincronização: os registos são combinados por identificador, mas alterações posteriores em cada dispositivo não passam automaticamente para o outro.
 
