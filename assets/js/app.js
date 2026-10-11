@@ -7,6 +7,7 @@ import {
   remove,
   deletePatient,
   clearAllData,
+  readAllData,
 } from "./db.js";
 import {
   createBackup,
@@ -15,8 +16,9 @@ import {
   restoreBackup,
   shareOrDownloadBackup,
 } from "./backup.js";
+import { shareOrDownloadExcel } from "./excel.js";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const VALID_VIEWS = new Set(["dashboard", "agenda", "patients", "clinic", "finances"]);
 const VIEW_META = Object.freeze({
   dashboard: { title: "Início", context: "Resumo da clínica" },
@@ -841,6 +843,7 @@ async function openBackupDialog() {
     eyebrow: "Cópia integral dos dados",
     body: `<div class="backup-layout">
       <section class="backup-panel backup-panel--export"><div class="backup-panel__icon" aria-hidden="true">↓</div><div><h3>Exportar backup</h3><p>Guarda pacientes, agenda, sessões, avaliações, finanças e definições num único ficheiro JSON.</p>${lastBackupAt ? `<small>Último backup: ${escapeHTML(formatDateTime(lastBackupAt))}</small>` : `<small>Ainda não foi criado nenhum backup.</small>`}</div><button class="button button--primary" type="button" data-action="export-backup">Partilhar ou guardar</button></section>
+      <section class="backup-panel"><div class="backup-panel__icon" aria-hidden="true">X</div><div><h3>Exportar para Excel</h3><p>Cria um ficheiro XLSX para consulta, filtros e impressão, com folhas separadas para todos os registos.</p><small>O Excel não substitui o backup JSON.</small></div><button class="button button--secondary" type="button" data-action="export-excel">Criar Excel</button></section>
       <section class="backup-panel"><div class="backup-panel__icon" aria-hidden="true">↑</div><div><h3>Importar / restaurar</h3><p>Selecione um backup FISIO IF. O ficheiro é validado antes de qualquer alteração.</p></div><label class="file-picker"><span>Selecionar ficheiro JSON</span><input id="backup-file" type="file" accept="application/json,.json"></label><button class="button button--secondary" type="button" data-action="validate-backup-file">Validar ficheiro</button><div id="backup-validation" class="validation-report" aria-live="polite"></div>
         <fieldset class="restore-options"><legend>Modo de restauro</legend><label class="radio"><input type="radio" name="restore-mode" value="replace" checked><span><strong>Substituir</strong><small>Repõe exatamente o conteúdo do backup.</small></span></label><label class="radio"><input type="radio" name="restore-mode" value="merge"><span><strong>Combinar</strong><small>Junta registos e mantém a versão mais recente.</small></span></label></fieldset>
         <button class="button button--danger button--block" id="restore-backup-button" type="button" data-action="restore-backup" disabled>Restaurar backup validado</button>
@@ -866,6 +869,20 @@ async function exportBackup() {
     showToast(error.message || "Não foi possível criar o backup.", "error", 6500);
   } finally {
     if (button) { button.disabled = false; button.textContent = "Partilhar ou guardar"; }
+  }
+}
+
+async function exportExcel() {
+  const button = elements.dialog.querySelector("[data-action='export-excel']");
+  if (button) button.disabled = true;
+  try {
+    const result = await shareOrDownloadExcel({ data: await readAllData() });
+    if (result.ok) showToast("Ficheiro Excel criado.", "success");
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Não foi possível criar o ficheiro Excel.", "error");
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -1119,6 +1136,7 @@ async function handleAction(button) {
     case "open-backup": case "backup": await openBackupDialog(); break;
     case "settings": await openSettingsDialog(); break;
     case "export-backup": await exportBackup(); break;
+    case "export-excel": await exportExcel(); break;
     case "validate-backup-file": await validateSelectedBackup(); break;
     case "restore-backup": await restoreSelectedBackup(); break;
     case "request-storage": await requestPersistentStorage(); break;
