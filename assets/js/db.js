@@ -1,8 +1,8 @@
 /** IndexedDB persistence for the offline FISIO IF PWA. */
 export const DB_NAME = "fisio-if";
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 export const STORE_NAMES = Object.freeze([
-  "patients", "appointments", "sessions", "evaluations", "transactions", "settings",
+  "patients", "appointments", "packages", "sessions", "evaluations", "transactions", "settings",
 ]);
 
 const CONFIG = Object.freeze({
@@ -13,8 +13,12 @@ const CONFIG = Object.freeze({
     ["by_patientId", "patientId"], ["by_start", "start"], ["by_status", "status"],
     ["by_patient_start", ["patientId", "start"]],
   ] },
+  packages: { keyPath: "id", indexes: [
+    ["by_patientId", "patientId"], ["by_purchaseDate", "purchaseDate"],
+    ["by_patient_purchaseDate", ["patientId", "purchaseDate"]],
+  ] },
   sessions: { keyPath: "id", indexes: [
-    ["by_patientId", "patientId"], ["by_date", "date"],
+    ["by_patientId", "patientId"], ["by_packageId", "packageId"], ["by_date", "date"],
     ["by_patient_date", ["patientId", "date"]],
   ] },
   evaluations: { keyPath: "id", indexes: [
@@ -22,14 +26,14 @@ const CONFIG = Object.freeze({
     ["by_patient_date", ["patientId", "date"]],
   ] },
   transactions: { keyPath: "id", indexes: [
-    ["by_patientId", "patientId"], ["by_date", "date"], ["by_type", "type"],
+    ["by_patientId", "patientId"], ["by_packageId", "packageId"], ["by_date", "date"], ["by_type", "type"],
     ["by_status", "status"], ["by_patient_date", ["patientId", "date"]],
   ] },
   settings: { keyPath: "key", indexes: [["by_updatedAt", "updatedAt"]] },
 });
 
 const DEPENDENT_STORES = Object.freeze([
-  "appointments", "sessions", "evaluations", "transactions",
+  "appointments", "packages", "sessions", "evaluations", "transactions",
 ]);
 const listeners = new Set();
 let databasePromise = null;
