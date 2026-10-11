@@ -189,7 +189,11 @@ export async function validateBackup(input, { verifyChecksum = true } = {}) {
   for (const storeName of STORE_NAMES) {
     const records = backup.data?.[storeName];
     if (!Array.isArray(records)) {
-      errors.push(`A coleção ${storeName} está ausente ou danificada.`);
+      if (storeName === "packages" && Number(backup.schemaVersion) < 2) {
+        warnings.push("A cópia é anterior à gestão de pacotes; será restaurada sem pacotes.");
+      } else {
+        errors.push(`A coleção ${storeName} está ausente ou danificada.`);
+      }
       normalisedData[storeName] = [];
       continue;
     }
@@ -221,13 +225,36 @@ export async function validateBackup(input, { verifyChecksum = true } = {}) {
   }
 
   const patientIds = new Set(normalisedData.patients.map((record) => record.id));
-  for (const storeName of ["appointments", "sessions", "evaluations", "transactions"]) {
+  for (const storeName of ["appointments", "packages", "sessions", "evaluations", "transactions"]) {
     for (const record of normalisedData[storeName]) {
       if (record.patientId && !patientIds.has(record.patientId)) {
         errors.push(`${storeName}: o registo ${record.id} refere um paciente inexistente.`);
       } else if (!record.patientId && storeName !== "transactions") {
         warnings.push(`${storeName}: o registo ${record.id} não está associado a um paciente.`);
       }
+    }
+  }
+
+  const packages = new Map(normalisedData.packages.map((record) => [record.id, record]));
+  for (const item of normalisedData.packages) {
+    if (!Number.isInteger(Number(item.totalSessions)) || Number(item.totalSessions) < 1) {
+      errors.push(`packages: o pacote ${item.id} não tem um número de sessões válido.`);
+    }
+    if (!Number.isFinite(Number(item.pricePerSession)) || Number(item.pricePerSession) < 0) {
+      errors.push(`packages: o pacote ${item.id} não tem um preço por sessão válido.`);
+    }
+  }
+  for (const item of normalisedData.sessions) {
+    if (!item.packageId) continue;
+    const packageRecord = packages.get(item.packageId);
+    if (!packageRecord) errors.push(`sessions: a sessão ${item.id} refere um pacote inexistente.`);
+    else if (packageRecord.patientId !== item.patientId) {
+      errors.push(`sessions: a sessão ${item.id} e o respetivo pacote pertencem a pacientes diferentes.`);
+    }
+  }
+  for (const item of normalisedData.transactions) {
+    if (item.packageId && !packages.has(item.packageId)) {
+      errors.push(`transactions: o movimento ${item.id} refere um pacote inexistente.`);
     }
   }
 
