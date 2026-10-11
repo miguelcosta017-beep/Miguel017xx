@@ -18,7 +18,7 @@ import {
 } from "./backup.js";
 import { shareOrDownloadExcel } from "./excel.js";
 
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const VALID_VIEWS = new Set(["dashboard", "agenda", "patients", "clinic", "finances"]);
 const VIEW_META = Object.freeze({
   dashboard: { title: "Início", context: "Resumo da clínica" },
@@ -30,6 +30,7 @@ const VIEW_META = Object.freeze({
 const STORE_LABELS = Object.freeze({
   patients: "Pacientes",
   appointments: "Marcações",
+  packages: "Pacotes",
   sessions: "Sessões",
   evaluations: "Avaliações",
   transactions: "Transações",
@@ -204,6 +205,22 @@ function patientDisplay(map, patientId) {
   return map.get(patientId)?.name || "Paciente não identificado";
 }
 
+function packageUsageMap(sessions) {
+  const usage = new Map();
+  for (const session of sessions) {
+    if (session.packageId) usage.set(session.packageId, (usage.get(session.packageId) || 0) + 1);
+  }
+  return usage;
+}
+
+function packageRemaining(packageRecord, usage) {
+  return Math.max(0, (Number(packageRecord.totalSessions) || 0) - (usage.get(packageRecord.id) || 0));
+}
+
+function packageStatus(packageRecord, usage) {
+  return packageRemaining(packageRecord, usage) > 0 ? "active" : "completed";
+}
+
 async function getSetting(key, fallback = undefined) {
   const record = await getById("settings", key);
   return record ? record.value : fallback;
@@ -229,6 +246,7 @@ function statusLabel(status) {
     paid: "Pago",
     pending: "Pendente",
     waived: "Isento",
+    package: "Pacote",
     active: "Ativo",
     inactive: "Inativo",
   })[status] || status || "—";
@@ -335,7 +353,7 @@ async function renderCurrentView({ focus = false, showLoading = false } = {}) {
 }
 
 async function renderDashboard() {
-  const { patients, appointments, sessions, transactions } = await loadCollections("patients", "appointments", "sessions", "transactions");
+  const { patients, appointments, packages, sessions, transactions } = await loadCollections("patients", "appointments", "packages", "sessions", "transactions");
   const today = localISODate();
   const nowText = new Date().toISOString();
   const month = today.slice(0, 7);
@@ -349,7 +367,7 @@ async function renderDashboard() {
   const reminderDays = Number(await getSetting("backupReminderDays", 14)) || 14;
   const lastBackupAt = await getSetting("lastBackupAt", null);
   const lastBackupAge = lastBackupAt ? (Date.now() - Date.parse(lastBackupAt)) / 86_400_000 : Infinity;
-  const hasData = patients.length + appointments.length + sessions.length + transactions.length > 0;
+  const hasData = patients.length + appointments.length + packages.length + sessions.length + transactions.length > 0;
   const showBackupReminder = hasData && lastBackupAge >= reminderDays;
 
   const agendaMarkup = todaysAppointments.length
@@ -455,7 +473,7 @@ async function renderPatients() {
 async function renderPatientDetail(patientId) {
   const [patient, collections] = await Promise.all([
     getById("patients", patientId),
-    loadCollections("appointments", "sessions", "evaluations", "transactions"),
+    loadCollections("appointments", "packages", "sessions", "evaluations", "transactions"),
   ]);
   if (!patient) {
     state.patientId = null;
@@ -463,10 +481,14 @@ async function renderPatientDetail(patientId) {
   }
   setHeader(patient.name, "Ficha clínica");
   const appointments = sortNewest(collections.appointments.filter((item) => item.patientId === patientId), "start");
+  const packages = sortNewest(collections.packages.filter((item) => item.patientId === patientId), "purchaseDate");
   const sessions = sortNewest(collections.sessions.filter((item) => item.patientId === patientId));
   const evaluations = sortNewest(collections.evaluations.filter((item) => item.patientId === patientId));
   const transactions = sortNewest(collections.transactions.filter((item) => item.patientId === patientId));
   const balance = sum(transactions.filter((item) => item.type === "income" && item.status === "paid"), (item) => item.amount) - sum(transactions.filter((item) => item.type === "expense" && item.status === "paid"), (item) => item.amount);
+  const usage = packageUsageMap(sessions);
+  const packageMap = new Map(packages.map((item) => [item.id, item]));
+  const activePackages = packages.filter((item) => packageRemaining(item, usage) > 0).length;
 
   return `<section class="view patient-detail" aria-labelledby="patient-heading">
     <button class="back-button" type="button" data-action="back-to-patients"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg>Pacientes</button>
@@ -475,14 +497,15 @@ async function renderPatientDetail(patientId) {
       <div class="patient-hero__main"><div class="patient-hero__title"><h2 id="patient-heading">${escapeHTML(patient.name)}</h2><span class="status-badge status-badge--${patient.active === false ? "inactive" : "active"}">${patient.active === false ? "Inativo" : "Ativo"}</span></div><p>${escapeHTML([patient.phone, patient.email].filter(Boolean).join(" · ") || "Sem contactos registados")}</p></div>
       <div class="patient-hero__actions"><button class="button button--secondary" type="button" data-action="edit-patient" data-id="${escapeHTML(patient.id)}">Editar ficha</button><button class="icon-button text-danger" type="button" data-action="delete-patient" data-id="${escapeHTML(patient.id)}" aria-label="Eliminar ficha"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6" /></svg></button></div>
     </article>
-    <div class="metrics-grid patient-metrics">${metricCard("Sessões", String(sessions.length))}${metricCard("Avaliações", String(evaluations.length))}${metricCard("Marcações", String(appointments.length))}${metricCard("Total recebido", formatCurrency(balance))}</div>
-    <div class="patient-actions"><button class="button button--primary" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Nova sessão</button><button class="button button--secondary" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Nova avaliação</button><button class="button button--secondary" type="button" data-action="add-appointment" data-patient-id="${escapeHTML(patient.id)}">Marcar</button><button class="button button--secondary" type="button" data-action="add-transaction" data-patient-id="${escapeHTML(patient.id)}">Movimento</button></div>
+    <div class="metrics-grid patient-metrics">${metricCard("Sessões", String(sessions.length))}${metricCard("Pacotes ativos", String(activePackages))}${metricCard("Avaliações", String(evaluations.length))}${metricCard("Marcações", String(appointments.length))}${metricCard("Total recebido", formatCurrency(balance))}</div>
+    <div class="patient-actions"><button class="button button--primary" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Nova sessão</button><button class="button button--secondary" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Novo pacote</button><button class="button button--secondary" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Nova avaliação</button><button class="button button--secondary" type="button" data-action="add-appointment" data-patient-id="${escapeHTML(patient.id)}">Marcar</button><button class="button button--secondary" type="button" data-action="add-transaction" data-patient-id="${escapeHTML(patient.id)}">Movimento</button></div>
     <div class="view-grid view-grid--sidebar">
       <div class="card-stack">
-        <article class="card"><header class="card__header"><div><p class="eyebrow">Histórico clínico</p><h3>Sessões</h3></div><button class="button button--small button--ghost" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${sessions.length ? sessions.slice(0, 8).map((session) => sessionCard(session, new Map([[patient.id, patient]]))).join("") : `<div class="inline-empty"><span>Sem sessões registadas.</span></div>`}</div></article>
+        <article class="card"><header class="card__header"><div><p class="eyebrow">Histórico clínico</p><h3>Sessões</h3></div><button class="button button--small button--ghost" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${sessions.length ? sessions.slice(0, 8).map((session) => sessionCard(session, new Map([[patient.id, patient]]), packageMap, usage)).join("") : `<div class="inline-empty"><span>Sem sessões registadas.</span></div>`}</div></article>
         <article class="card"><header class="card__header"><div><p class="eyebrow">Avaliação</p><h3>Avaliações clínicas</h3></div><button class="button button--small button--ghost" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${evaluations.length ? evaluations.slice(0, 6).map((evaluation) => evaluationCard(evaluation, new Map([[patient.id, patient]]))).join("") : `<div class="inline-empty"><span>Sem avaliações registadas.</span></div>`}</div></article>
       </div>
       <div class="card-stack">
+        <article class="card"><header class="card__header"><div><p class="eyebrow">Pré-pagamento</p><h3>Pacotes de sessões</h3></div><button class="button button--small button--ghost" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${packages.length ? packages.map((item) => packageCard(item, usage)).join("") : `<div class="inline-empty"><span>Sem pacotes registados.</span></div>`}</div></article>
         <article class="card"><header class="card__header"><h3>Dados do paciente</h3></header><div class="card__body"><dl class="detail-list"><div><dt>Nascimento</dt><dd>${escapeHTML(formatDate(patient.birthDate, "Não indicado"))}</dd></div><div><dt>NIF</dt><dd>${escapeHTML(patient.nif || "Não indicado")}</dd></div><div><dt>Morada</dt><dd>${escapeHTML(patient.address || "Não indicada")}</dd></div><div><dt>Emergência</dt><dd>${escapeHTML(patient.emergencyContact || "Não indicado")}</dd></div></dl>${patient.clinicalNotes ? `<div class="clinical-note"><strong>Notas clínicas</strong><p>${escapeHTML(patient.clinicalNotes)}</p></div>` : ""}</div></article>
         <article class="card"><header class="card__header"><h3>Próximas marcações</h3></header><div class="card__body">${appointments.filter((item) => !["completed", "cancelled"].includes(item.status)).slice(0, 4).map((appointment) => `<button class="compact-record" type="button" data-action="edit-appointment" data-id="${escapeHTML(appointment.id)}"><span><strong>${escapeHTML(formatDateTime(appointment.start))}</strong><small>${escapeHTML(appointmentTypeLabel(appointment.type))}</small></span><span class="status-badge status-badge--${escapeHTML(appointment.status)}">${escapeHTML(statusLabel(appointment.status))}</span></button>`).join("") || `<div class="inline-empty"><span>Sem marcações futuras.</span></div>`}</div></article>
       </div>
@@ -491,21 +514,37 @@ async function renderPatientDetail(patientId) {
 }
 
 async function renderClinic() {
-  const { sessions, evaluations, patients } = await loadCollections("sessions", "evaluations", "patients");
+  const { packages, sessions, evaluations, patients } = await loadCollections("packages", "sessions", "evaluations", "patients");
   const map = patientMap(patients);
+  const packageMap = new Map(packages.map((item) => [item.id, item]));
+  const usage = packageUsageMap(sessions);
   const records = state.clinicTab === "sessions" ? sortNewest(sessions) : sortNewest(evaluations);
   return `<section class="view" aria-labelledby="clinic-heading">
     <div class="view-header"><div><h2 id="clinic-heading">Registos clínicos</h2><p>Sessões, evolução e avaliações estruturadas.</p></div><button class="button button--primary" type="button" data-action="${state.clinicTab === "sessions" ? "add-session" : "add-evaluation"}">${state.clinicTab === "sessions" ? "Nova sessão" : "Nova avaliação"}</button></div>
     <div class="segmented-control clinic-tabs" role="tablist" aria-label="Tipo de registo"><button type="button" role="tab" data-action="clinic-tab" data-tab="sessions" aria-selected="${state.clinicTab === "sessions"}" class="${state.clinicTab === "sessions" ? "is-active" : ""}">Sessões <span>${sessions.length}</span></button><button type="button" role="tab" data-action="clinic-tab" data-tab="evaluations" aria-selected="${state.clinicTab === "evaluations"}" class="${state.clinicTab === "evaluations" ? "is-active" : ""}">Avaliações <span>${evaluations.length}</span></button></div>
-    ${records.length ? `<div class="clinical-list">${state.clinicTab === "sessions" ? records.map((record) => sessionCard(record, map)).join("") : records.map((record) => evaluationCard(record, map)).join("")}</div>` : emptyState(state.clinicTab === "sessions" ? "Sem sessões" : "Sem avaliações", "Adicione o primeiro registo clínico.", state.clinicTab === "sessions" ? "add-session" : "add-evaluation", "Adicionar")}
+    ${records.length ? `<div class="clinical-list">${state.clinicTab === "sessions" ? records.map((record) => sessionCard(record, map, packageMap, usage)).join("") : records.map((record) => evaluationCard(record, map)).join("")}</div>` : emptyState(state.clinicTab === "sessions" ? "Sem sessões" : "Sem avaliações", "Adicione o primeiro registo clínico.", state.clinicTab === "sessions" ? "add-session" : "add-evaluation", "Adicionar")}
   </section>`;
 }
 
-function sessionCard(session, map) {
+function sessionCard(session, map, packages = new Map(), usage = new Map()) {
+  const packageRecord = session.packageId ? packages.get(session.packageId) : null;
+  const packageMeta = packageRecord
+    ? `${packageRecord.name || "Pacote"} · ${packageRemaining(packageRecord, usage)} de ${Number(packageRecord.totalSessions) || 0} disponíveis`
+    : "";
   return `<article class="clinical-card card">
     <div class="clinical-card__date"><strong>${escapeHTML(String(session.date || "").slice(-2) || "—")}</strong><small>${escapeHTML(new Intl.DateTimeFormat("pt-PT", { month: "short" }).format(parseDate(session.date) || new Date()))}</small></div>
-    <div class="clinical-card__main"><div class="clinical-card__heading"><button type="button" class="link-button" data-action="open-patient" data-id="${escapeHTML(session.patientId)}">${escapeHTML(patientDisplay(map, session.patientId))}</button><span class="status-badge status-badge--${session.paymentStatus === "paid" ? "paid" : "pending"}">${escapeHTML(statusLabel(session.paymentStatus))}</span></div><p>${escapeHTML(session.treatment || "Sessão sem descrição de tratamento")}</p><div class="clinical-card__meta"><span>Dor: ${session.painBefore ?? "—"} → ${session.painAfter ?? "—"}</span><span>${formatCurrency(session.value)}</span></div></div>
+    <div class="clinical-card__main"><div class="clinical-card__heading"><button type="button" class="link-button" data-action="open-patient" data-id="${escapeHTML(session.patientId)}">${escapeHTML(patientDisplay(map, session.patientId))}</button><span class="status-badge status-badge--${session.paymentStatus === "paid" ? "paid" : session.paymentStatus === "package" ? "package" : "pending"}">${escapeHTML(statusLabel(session.paymentStatus))}</span></div><p>${escapeHTML(session.treatment || "Sessão sem descrição de tratamento")}</p><div class="clinical-card__meta"><span>Dor: ${session.painBefore ?? "—"} → ${session.painAfter ?? "—"}</span><span>${formatCurrency(session.value)}</span>${packageMeta ? `<span>${escapeHTML(packageMeta)}</span>` : ""}</div></div>
     <div class="clinical-card__actions"><button class="icon-button" type="button" data-action="edit-session" data-id="${escapeHTML(session.id)}" aria-label="Editar sessão"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="sessions" data-id="${escapeHTML(session.id)}" aria-label="Eliminar sessão"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
+  </article>`;
+}
+
+function packageCard(packageRecord, usage) {
+  const used = usage.get(packageRecord.id) || 0;
+  const remaining = packageRemaining(packageRecord, usage);
+  const status = packageStatus(packageRecord, usage);
+  return `<article class="package-record compact-record">
+    <span><strong>${escapeHTML(packageRecord.name || `Pacote de ${packageRecord.totalSessions} sessões`)}</strong><small>${remaining} de ${Number(packageRecord.totalSessions) || 0} disponíveis · ${escapeHTML(formatCurrency(packageRecord.pricePerSession))}/sessão · ${escapeHTML(statusLabel(packageRecord.paymentStatus))}</small><span class="package-progress" aria-label="${used} de ${Number(packageRecord.totalSessions) || 0} sessões utilizadas"><i style="--package-progress:${Math.min(100, Math.round(used / Math.max(1, Number(packageRecord.totalSessions) || 1) * 100))}%"></i></span></span>
+    <span class="package-record__actions"><span class="status-badge status-badge--${status}">${status === "completed" ? "Concluído" : "Ativo"}</span><button class="icon-button" type="button" data-action="edit-package" data-id="${escapeHTML(packageRecord.id)}" aria-label="Editar pacote"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="packages" data-id="${escapeHTML(packageRecord.id)}" aria-label="Eliminar pacote"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></span>
   </article>`;
 }
 
@@ -548,10 +587,10 @@ function shiftMonth(month, amount) {
 }
 
 function transactionRow(transaction, map) {
-  const automatic = Boolean(transaction.sessionId);
+  const automaticLabel = transaction.packageId ? "Pacote" : transaction.sessionId ? "Sessão" : "";
   return `<article class="transaction-row">
     <span class="transaction-row__icon transaction-row__icon--${escapeHTML(transaction.type)}" aria-hidden="true">${transaction.type === "expense" ? "−" : "+"}</span>
-    <div class="transaction-row__main"><strong>${escapeHTML(transaction.description || transaction.category || transactionTypeLabel(transaction.type))}</strong><span>${escapeHTML(formatDate(transaction.date))}${transaction.patientId ? ` · ${escapeHTML(patientDisplay(map, transaction.patientId))}` : ""}${automatic ? " · Sessão" : ""}</span></div>
+    <div class="transaction-row__main"><strong>${escapeHTML(transaction.description || transaction.category || transactionTypeLabel(transaction.type))}</strong><span>${escapeHTML(formatDate(transaction.date))}${transaction.patientId ? ` · ${escapeHTML(patientDisplay(map, transaction.patientId))}` : ""}${automaticLabel ? ` · ${automaticLabel}` : ""}</span></div>
     <div class="transaction-row__amount"><strong class="${transaction.type === "expense" ? "money--negative" : "money--positive"}">${transaction.type === "expense" ? "−" : "+"}${escapeHTML(formatCurrency(transaction.amount))}</strong><span class="status-badge status-badge--${escapeHTML(transaction.status)}">${escapeHTML(statusLabel(transaction.status))}</span></div>
     <div class="transaction-row__actions"><button class="icon-button" type="button" data-action="edit-transaction" data-id="${escapeHTML(transaction.id)}" aria-label="Editar movimento"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="transactions" data-id="${escapeHTML(transaction.id)}" aria-label="Eliminar movimento"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
   </article>`;
@@ -582,12 +621,14 @@ function formActions(label = "Guardar") {
 }
 
 async function openEntityForm(entity, id = null, defaults = {}) {
-  const storeMap = { patient: "patients", appointment: "appointments", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
+  const storeMap = { patient: "patients", appointment: "appointments", package: "packages", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
   const storeName = storeMap[entity];
-  const [record, patients, appointments] = await Promise.all([
+  const [record, patients, appointments, packages, sessions] = await Promise.all([
     id ? getById(storeName, id) : Promise.resolve(null),
     entity === "patient" ? Promise.resolve([]) : getAll("patients"),
     entity === "session" ? getAll("appointments") : Promise.resolve([]),
+    entity === "session" ? getAll("packages") : Promise.resolve([]),
+    ["session", "package"].includes(entity) ? getAll("sessions") : Promise.resolve([]),
   ]);
   if (id && !record) {
     showToast("O registo já não existe.", "warning");
@@ -602,7 +643,8 @@ async function openEntityForm(entity, id = null, defaults = {}) {
   const config = {
     patient: [id ? "Editar paciente" : "Novo paciente", patientForm(value)],
     appointment: [id ? "Editar marcação" : "Nova marcação", appointmentForm(value, patients)],
-    session: [id ? "Editar sessão" : "Nova sessão", sessionForm(value, patients, appointments)],
+    package: [id ? "Editar pacote" : "Novo pacote", packageForm(value, patients, sessions, { editing: Boolean(id) })],
+    session: [id ? "Editar sessão" : "Nova sessão", sessionForm(value, patients, appointments, packages, sessions)],
     evaluation: [id ? "Editar avaliação" : "Nova avaliação", evaluationForm(value, patients)],
     transaction: [id ? "Editar transação" : "Nova transação", transactionForm(value, patients)],
   }[entity];
@@ -612,6 +654,8 @@ async function openEntityForm(entity, id = null, defaults = {}) {
     body: `<form id="entity-form" class="entity-form" data-entity="${entity}" data-id="${escapeHTML(id || "")}" novalidate>${config[1]}<div class="form-errors" role="alert" hidden></div></form>`,
     actions: formActions(id ? "Guardar alterações" : "Guardar"),
   });
+  if (entity === "session") updateSessionPackageFields();
+  if (entity === "package") updatePackageTotalPreview();
 }
 
 function patientForm(patient) {
@@ -640,13 +684,44 @@ function appointmentForm(appointment, patients) {
   </div></fieldset></div>`;
 }
 
-function sessionForm(session, patients, appointments) {
+function packageForm(packageRecord, patients, sessions, { editing = false } = {}) {
+  const used = sessions.filter((session) => session.packageId === packageRecord.id).length;
+  const totalSessions = Math.max(1, Number(packageRecord.totalSessions) || 6);
+  const pricePerSession = Math.max(0, Number(packageRecord.pricePerSession) || 30);
+  const patientField = editing
+    ? `<input type="hidden" name="patientId" value="${escapeHTML(packageRecord.patientId)}"><select id="package-patient" disabled>${patientOptions(patients, packageRecord.patientId)}</select>`
+    : `<select id="package-patient" name="patientId" required><option value="">Selecionar…</option>${patientOptions(patients, packageRecord.patientId)}</select>`;
+  return `<div class="form-sections"><fieldset class="form-section"><legend>Pacote de sessões</legend><div class="form-grid form-grid--two">
+    <div class="field"><label for="package-patient">Paciente *</label>${patientField}</div>
+    <div class="field"><label for="package-date">Data da compra *</label><input id="package-date" name="purchaseDate" type="date" required value="${escapeHTML(packageRecord.purchaseDate || localISODate())}"></div>
+    <div class="field field--wide"><label for="package-name">Nome do pacote *</label><input id="package-name" name="name" required maxlength="120" value="${escapeHTML(packageRecord.name || "Pacote de fisioterapia")}" placeholder="Ex.: Pacote de 6 sessões"></div>
+    <div class="field"><label for="package-sessions">Número de sessões *</label><input id="package-sessions" name="totalSessions" type="number" min="${Math.max(1, used)}" max="200" step="1" required inputmode="numeric" value="${escapeHTML(totalSessions)}">${used ? `<p class="field__hint">Já utilizadas: ${used}. O total não pode ser inferior.</p>` : ""}</div>
+    <div class="field"><label for="package-price">Preço por sessão (€) *</label><input id="package-price" name="pricePerSession" type="number" min="0" step="0.01" required inputmode="decimal" value="${escapeHTML(pricePerSession)}"></div>
+  </div><div class="package-total-preview"><span>Total do pacote</span><strong id="package-total-preview">${escapeHTML(formatCurrency(totalSessions * pricePerSession))}</strong></div></fieldset>
+  <fieldset class="form-section"><legend>Recebimento</legend><div class="form-grid form-grid--two">
+    <div class="field"><label for="package-payment">Estado</label><select id="package-payment" name="paymentStatus"><option value="paid"${selected(packageRecord.paymentStatus || "paid", "paid")}>Pago</option><option value="pending"${selected(packageRecord.paymentStatus, "pending")}>Pendente</option><option value="cancelled"${selected(packageRecord.paymentStatus, "cancelled")}>Anulado</option></select></div>
+    <div class="field"><label for="package-method">Método</label><select id="package-method" name="paymentMethod"><option value=""${selected(packageRecord.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(packageRecord.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(packageRecord.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(packageRecord.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(packageRecord.paymentMethod, "mbway")}>MB WAY</option></select></div>
+    <div class="field field--wide"><label for="package-notes">Notas</label><textarea id="package-notes" name="notes" rows="3" placeholder="Condições ou observações do pacote…">${escapeHTML(packageRecord.notes)}</textarea></div>
+  </div><p class="form-footnote">A receita é registada uma única vez pelo valor total do pacote. As sessões utilizadas não criam novas receitas.</p></fieldset></div>`;
+}
+
+function sessionForm(session, patients, appointments, packages, sessions) {
   const selectedPatient = session.patientId || "";
+  const patientNames = patientMap(patients);
+  const usage = packageUsageMap(sessions.filter((item) => item.id !== session.id));
   const linkedAppointments = appointments
     .filter((appointment) => !selectedPatient || appointment.patientId === selectedPatient)
     .sort((a, b) => String(b.start).localeCompare(String(a.start)))
     .slice(0, 30)
-    .map((appointment) => `<option value="${escapeHTML(appointment.id)}"${selected(appointment.id, session.appointmentId)}>${escapeHTML(`${formatDateTime(appointment.start)} — ${patientDisplay(patientMap(patients), appointment.patientId)}`)}</option>`).join("");
+    .map((appointment) => `<option value="${escapeHTML(appointment.id)}"${selected(appointment.id, session.appointmentId)}>${escapeHTML(`${formatDateTime(appointment.start)} — ${patientDisplay(patientNames, appointment.patientId)}`)}</option>`).join("");
+  const packageOptions = sortNewest(packages, "purchaseDate").map((item) => {
+    const remaining = packageRemaining(item, usage);
+    const belongsToPatient = !selectedPatient || item.patientId === selectedPatient;
+    const isCurrent = item.id === session.packageId;
+    const disabled = (!belongsToPatient || (remaining <= 0 && !isCurrent)) ? " disabled" : "";
+    const patientSuffix = selectedPatient ? "" : ` — ${patientDisplay(patientNames, item.patientId)}`;
+    return `<option value="${escapeHTML(item.id)}" data-patient-id="${escapeHTML(item.patientId)}" data-price="${escapeHTML(item.pricePerSession)}" data-total="${escapeHTML(item.totalSessions)}" data-remaining="${remaining}"${selected(item.id, session.packageId)}${disabled}>${escapeHTML(`${item.name || "Pacote"} — ${remaining} disponíveis${patientSuffix}`)}</option>`;
+  }).join("");
   return `<div class="form-sections"><fieldset class="form-section"><legend>Sessão clínica</legend><div class="form-grid form-grid--two">
     <div class="field"><label for="session-patient">Paciente *</label><select id="session-patient" name="patientId" required><option value="">Selecionar…</option>${patientOptions(patients, selectedPatient)}</select></div>
     <div class="field"><label for="session-date">Data *</label><input id="session-date" name="date" type="date" required value="${escapeHTML(session.date || localISODate())}"></div>
@@ -657,10 +732,54 @@ function sessionForm(session, patients, appointments) {
     <div class="field field--wide"><label for="session-exercises">Exercícios / plano domiciliário</label><textarea id="session-exercises" name="exercises" rows="4" placeholder="Exercícios, séries, frequência e progressões…">${escapeHTML(session.exercises)}</textarea></div>
     <div class="field field--wide"><label for="session-notes">Notas adicionais</label><textarea id="session-notes" name="notes" rows="3">${escapeHTML(session.notes)}</textarea></div>
   </div></fieldset><fieldset class="form-section"><legend>Pagamento</legend><div class="form-grid form-grid--three">
+    <div class="field field--wide"><label for="session-package">Pacote</label><select id="session-package" name="packageId"><option value="">Sessão avulsa</option>${packageOptions}</select><p class="field__hint" id="session-package-hint">Escolha um pacote ativo para descontar automaticamente uma utilização.</p></div>
     <div class="field"><label for="session-value">Valor (€)</label><input id="session-value" name="value" type="number" min="0" step="0.01" inputmode="decimal" value="${escapeHTML(session.value ?? "")}"></div>
-    <div class="field"><label for="session-payment">Estado</label><select id="session-payment" name="paymentStatus"><option value="pending"${selected(session.paymentStatus || "pending", "pending")}>Pendente</option><option value="paid"${selected(session.paymentStatus, "paid")}>Pago</option><option value="waived"${selected(session.paymentStatus, "waived")}>Isento</option></select></div>
+    <div class="field"><label for="session-payment">Estado</label><select id="session-payment" name="paymentStatus"><option value="pending"${selected(session.paymentStatus || "pending", "pending")}>Pendente</option><option value="paid"${selected(session.paymentStatus, "paid")}>Pago</option><option value="waived"${selected(session.paymentStatus, "waived")}>Isento</option><option value="package"${selected(session.paymentStatus, "package")}>Incluída no pacote</option></select></div>
     <div class="field"><label for="session-method">Método</label><select id="session-method" name="paymentMethod"><option value=""${selected(session.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(session.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(session.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(session.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(session.paymentMethod, "mbway")}>MB WAY</option></select></div>
-  </div><p class="form-footnote">Ao guardar, a FISIO IF cria ou atualiza automaticamente o movimento financeiro desta sessão.</p></fieldset></div>`;
+  </div><p class="form-footnote">Numa sessão avulsa é criado o respetivo movimento financeiro. Numa sessão incluída num pacote é descontada uma utilização sem duplicar a receita.</p></fieldset></div>`;
+}
+
+function updatePackageTotalPreview() {
+  const form = elements.dialogBody.querySelector("#entity-form[data-entity='package']");
+  if (!form) return;
+  const total = Math.max(0, Number(form.elements.totalSessions?.value) || 0) * Math.max(0, Number(form.elements.pricePerSession?.value) || 0);
+  const output = form.querySelector("#package-total-preview");
+  if (output) output.textContent = formatCurrency(total);
+}
+
+function updateSessionPackageFields() {
+  const form = elements.dialogBody.querySelector("#entity-form[data-entity='session']");
+  if (!form) return;
+  const patientId = form.elements.patientId?.value || "";
+  const packageSelect = form.elements.packageId;
+  for (const option of packageSelect?.options || []) {
+    if (!option.value) continue;
+    const wrongPatient = Boolean(patientId && option.dataset.patientId !== patientId);
+    const unavailable = Number(option.dataset.remaining) <= 0 && option.value !== packageSelect.value;
+    option.disabled = wrongPatient || unavailable;
+  }
+  const selectedOption = packageSelect?.selectedOptions?.[0];
+  const hasPackage = Boolean(selectedOption?.value && !selectedOption.disabled);
+  const valueInput = form.elements.value;
+  const statusSelect = form.elements.paymentStatus;
+  const methodSelect = form.elements.paymentMethod;
+  const hint = form.querySelector("#session-package-hint");
+  if (hasPackage) {
+    valueInput.value = selectedOption.dataset.price || "0";
+    statusSelect.value = "package";
+    methodSelect.value = "";
+    valueInput.readOnly = true;
+    statusSelect.disabled = true;
+    methodSelect.disabled = true;
+    if (hint) hint.textContent = `${selectedOption.dataset.remaining} utilização(ões) disponível(eis). Esta sessão não cria uma nova receita.`;
+  } else {
+    if (packageSelect?.value && selectedOption?.disabled) packageSelect.value = "";
+    valueInput.readOnly = false;
+    statusSelect.disabled = false;
+    methodSelect.disabled = false;
+    if (statusSelect.value === "package") statusSelect.value = "pending";
+    if (hint) hint.textContent = "Escolha um pacote ativo para descontar automaticamente uma utilização.";
+  }
 }
 
 function evaluationForm(evaluation, patients) {
@@ -690,7 +809,7 @@ function transactionForm(transaction, patients) {
     <div class="field"><label for="transaction-date">Data *</label><input id="transaction-date" name="date" type="date" required value="${escapeHTML(transaction.date || localISODate())}"></div>
     <div class="field"><label for="transaction-amount">Valor (€) *</label><input id="transaction-amount" name="amount" type="number" min="0" step="0.01" required inputmode="decimal" value="${escapeHTML(transaction.amount ?? "")}"></div>
     <div class="field"><label for="transaction-status">Estado</label><select id="transaction-status" name="status"><option value="paid"${selected(transaction.status || "paid", "paid")}>Pago</option><option value="pending"${selected(transaction.status, "pending")}>Pendente</option><option value="cancelled"${selected(transaction.status, "cancelled")}>Anulado</option></select></div>
-    <div class="field"><label for="transaction-category">Categoria</label><input id="transaction-category" name="category" list="transaction-categories" value="${escapeHTML(transaction.category)}" placeholder="Ex.: Sessão"><datalist id="transaction-categories"><option value="Sessão"><option value="Avaliação"><option value="Material"><option value="Renda"><option value="Formação"><option value="Outro"></datalist></div>
+    <div class="field"><label for="transaction-category">Categoria</label><input id="transaction-category" name="category" list="transaction-categories" value="${escapeHTML(transaction.category)}" placeholder="Ex.: Sessão"><datalist id="transaction-categories"><option value="Sessão"><option value="Pacote"><option value="Avaliação"><option value="Material"><option value="Renda"><option value="Formação"><option value="Outro"></datalist></div>
     <div class="field"><label for="transaction-patient">Paciente</label><select id="transaction-patient" name="patientId">${patientOptions(patients, transaction.patientId, { allowEmpty: true })}</select></div>
     <div class="field field--wide"><label for="transaction-description">Descrição *</label><input id="transaction-description" name="description" required maxlength="220" value="${escapeHTML(transaction.description)}"></div>
     <div class="field"><label for="transaction-method">Método</label><select id="transaction-method" name="paymentMethod"><option value=""${selected(transaction.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(transaction.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(transaction.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(transaction.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(transaction.paymentMethod, "mbway")}>MB WAY</option></select></div>
@@ -708,24 +827,47 @@ async function saveEntityForm(form) {
     const entity = form.dataset.entity;
     const id = form.dataset.id || null;
     const data = Object.fromEntries(new FormData(form).entries());
-    const stores = { patient: "patients", appointment: "appointments", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
+    const stores = { patient: "patients", appointment: "appointments", package: "packages", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
     const store = stores[entity];
     const current = id ? await getById(store, id) : {};
     let record = { ...(current || {}), ...data };
     if (id) record.id = id;
     if (entity === "patient") record.active = form.elements.active.checked;
     if (entity === "appointment") record.duration = Math.max(10, Number(data.duration) || 60);
+    if (entity === "package") {
+      record.patientId = data.patientId;
+      record.totalSessions = Math.max(1, Math.floor(Number(data.totalSessions) || 1));
+      record.pricePerSession = Math.max(0, Number(data.pricePerSession) || 0);
+      record.totalAmount = Number((record.totalSessions * record.pricePerSession).toFixed(2));
+      const used = id ? (await getAll("sessions")).filter((item) => item.packageId === id).length : 0;
+      if (record.totalSessions < used) throw new Error(`Este pacote já tem ${used} sessões utilizadas.`);
+    }
     if (entity === "session") {
       record.painBefore = data.painBefore === "" ? null : Number(data.painBefore);
       record.painAfter = data.painAfter === "" ? null : Number(data.painAfter);
-      record.value = Math.max(0, Number(data.value) || 0);
       record.appointmentId = data.appointmentId || null;
+      record.packageId = data.packageId || null;
+      if (record.packageId) {
+        const packageRecord = await getById("packages", record.packageId);
+        if (!packageRecord) throw new Error("O pacote selecionado já não existe.");
+        if (packageRecord.patientId !== data.patientId) throw new Error("O pacote selecionado pertence a outro paciente.");
+        const used = (await getAll("sessions")).filter((item) => item.packageId === record.packageId && item.id !== id).length;
+        if (used >= Number(packageRecord.totalSessions)) throw new Error("Este pacote já não tem sessões disponíveis.");
+        record.value = Math.max(0, Number(packageRecord.pricePerSession) || 0);
+        record.paymentStatus = "package";
+        record.paymentMethod = "";
+      } else {
+        record.value = Math.max(0, Number(data.value) || 0);
+        record.paymentStatus = data.paymentStatus || "pending";
+        record.paymentMethod = data.paymentMethod || "";
+      }
     }
     if (entity === "transaction") {
       record.amount = Math.abs(Number(data.amount) || 0);
       record.patientId = data.patientId || null;
     }
     const saved = await upsert(store, record);
+    if (entity === "package") await syncPackageTransaction(saved);
     if (entity === "session") await syncSessionTransaction(saved);
     closeDialog();
     showToast(id ? "Alterações guardadas." : "Registo criado.", "success");
@@ -743,7 +885,7 @@ async function saveEntityForm(form) {
 async function syncSessionTransaction(session) {
   const transactionId = `txn_${session.id}`;
   const amount = Number(session.value) || 0;
-  if (amount <= 0 || session.paymentStatus === "waived") {
+  if (session.packageId || amount <= 0 || session.paymentStatus === "waived") {
     await remove("transactions", transactionId);
     return;
   }
@@ -760,6 +902,31 @@ async function syncSessionTransaction(session) {
     amount,
     status: session.paymentStatus === "paid" ? "paid" : "pending",
     paymentMethod: session.paymentMethod || "",
+    automatic: true,
+  });
+}
+
+async function syncPackageTransaction(packageRecord) {
+  const transactionId = `txn_pkg_${packageRecord.id}`;
+  const amount = Number(packageRecord.totalAmount) || (Number(packageRecord.totalSessions) || 0) * (Number(packageRecord.pricePerSession) || 0);
+  if (amount <= 0 || packageRecord.paymentStatus === "cancelled") {
+    await remove("transactions", transactionId);
+    return;
+  }
+  const existing = await getById("transactions", transactionId);
+  await upsert("transactions", {
+    ...(existing || {}),
+    id: transactionId,
+    patientId: packageRecord.patientId,
+    packageId: packageRecord.id,
+    sessionId: null,
+    date: packageRecord.purchaseDate,
+    type: "income",
+    category: "Pacote",
+    description: packageRecord.name || `Pacote de ${packageRecord.totalSessions} sessões`,
+    amount: Number(amount.toFixed(2)),
+    status: packageRecord.paymentStatus === "paid" ? "paid" : "pending",
+    paymentMethod: packageRecord.paymentMethod || "",
     automatic: true,
   });
 }
@@ -796,10 +963,18 @@ function showToast(message, type = "info", duration = 4200) {
 }
 
 async function deleteRecord(store, id) {
+  if (store === "packages") {
+    const used = (await getAll("sessions")).filter((item) => item.packageId === id).length;
+    if (used > 0) {
+      showToast(`Este pacote já tem ${used} sessão(ões) utilizada(s). Pode editá-lo, mas não eliminá-lo.`, "warning", 6500);
+      return;
+    }
+  }
   const label = STORE_LABELS[store]?.toLocaleLowerCase("pt-PT") || "registo";
   const confirmed = await confirmAction({ title: "Eliminar registo?", message: `Esta ação elimina o registo de ${label} deste dispositivo.`, confirmLabel: "Eliminar" });
   if (!confirmed) return;
   if (store === "sessions") await remove("transactions", `txn_${id}`);
+  if (store === "packages") await remove("transactions", `txn_pkg_${id}`);
   const removed = await remove(store, id);
   showToast(removed ? "Registo eliminado." : "O registo já não existia.", removed ? "success" : "warning");
   await renderCurrentView();
@@ -842,7 +1017,7 @@ async function openBackupDialog() {
     title: "Backup e restauro",
     eyebrow: "Cópia integral dos dados",
     body: `<div class="backup-layout">
-      <section class="backup-panel backup-panel--export"><div class="backup-panel__icon" aria-hidden="true">↓</div><div><h3>Exportar backup</h3><p>Guarda pacientes, agenda, sessões, avaliações, finanças e definições num único ficheiro JSON.</p>${lastBackupAt ? `<small>Último backup: ${escapeHTML(formatDateTime(lastBackupAt))}</small>` : `<small>Ainda não foi criado nenhum backup.</small>`}</div><button class="button button--primary" type="button" data-action="export-backup">Partilhar ou guardar</button></section>
+      <section class="backup-panel backup-panel--export"><div class="backup-panel__icon" aria-hidden="true">↓</div><div><h3>Exportar backup</h3><p>Guarda pacientes, agenda, pacotes, sessões, avaliações, finanças e definições num único ficheiro JSON.</p>${lastBackupAt ? `<small>Último backup: ${escapeHTML(formatDateTime(lastBackupAt))}</small>` : `<small>Ainda não foi criado nenhum backup.</small>`}</div><button class="button button--primary" type="button" data-action="export-backup">Partilhar ou guardar</button></section>
       <section class="backup-panel"><div class="backup-panel__icon" aria-hidden="true">X</div><div><h3>Exportar para Excel</h3><p>Cria um ficheiro XLSX para consulta, filtros e impressão, com folhas separadas para todos os registos.</p><small>O Excel não substitui o backup JSON.</small></div><button class="button button--secondary" type="button" data-action="export-excel">Criar Excel</button></section>
       <section class="backup-panel"><div class="backup-panel__icon" aria-hidden="true">↑</div><div><h3>Importar / restaurar</h3><p>Selecione um backup FISIO IF. O ficheiro é validado antes de qualquer alteração.</p></div><label class="file-picker"><span>Selecionar ficheiro JSON</span><input id="backup-file" type="file" accept="application/json,.json"></label><button class="button button--secondary" type="button" data-action="validate-backup-file">Validar ficheiro</button><div id="backup-validation" class="validation-report" aria-live="polite"></div>
         <fieldset class="restore-options"><legend>Modo de restauro</legend><label class="radio"><input type="radio" name="restore-mode" value="replace" checked><span><strong>Substituir</strong><small>Repõe exatamente o conteúdo do backup.</small></span></label><label class="radio"><input type="radio" name="restore-mode" value="merge"><span><strong>Combinar</strong><small>Junta registos e mantém a versão mais recente.</small></span></label></fieldset>
@@ -1117,6 +1292,8 @@ async function handleAction(button) {
     case "delete-patient": await removePatientRecord(button.dataset.id); break;
     case "add-appointment": await openEntityForm("appointment", null, { patientId, start: `${state.agendaDate || localISODate()}T09:00` }); break;
     case "edit-appointment": await openEntityForm("appointment", button.dataset.id); break;
+    case "add-package": await openEntityForm("package", null, { patientId, purchaseDate: localISODate(), totalSessions: 6, pricePerSession: 30, paymentStatus: "paid" }); break;
+    case "edit-package": await openEntityForm("package", button.dataset.id); break;
     case "add-session": await openEntityForm("session", null, { patientId, date: localISODate() }); break;
     case "edit-session": await openEntityForm("session", button.dataset.id); break;
     case "add-evaluation": await openEntityForm("evaluation", null, { patientId, date: localISODate() }); break;
@@ -1202,6 +1379,14 @@ function bindEvents() {
     if (!form) return;
     event.preventDefault();
     await saveEntityForm(form);
+  });
+
+  elements.dialogBody.addEventListener("input", (event) => {
+    if (["package-sessions", "package-price"].includes(event.target.id)) updatePackageTotalPreview();
+  });
+
+  elements.dialogBody.addEventListener("change", (event) => {
+    if (["session-patient", "session-package"].includes(event.target.id)) updateSessionPackageFields();
   });
 
   elements.viewRoot.addEventListener("input", (event) => {
