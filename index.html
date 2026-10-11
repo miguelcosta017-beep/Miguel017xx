@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="pt-PT" data-theme="auto">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f4f8f7">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="FISIO IF — gestão clínica privada, local e offline para fisioterapia.">
+    <meta name="application-name" content="FISIO IF">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="FISIO IF">
+    <meta name="format-detection" content="telephone=no">
+
+    <title>FISIO IF</title>
+
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="./assets/icons/icon.svg">
+    <link rel="apple-touch-icon" sizes="180x180" href="data:image/png;base64,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">
+    <link rel="stylesheet" href="./assets/css/styles.css">
+    <script type="module" src="./assets/js/app.js"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}), { once: true });
+      }
+    </script>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#view-root">Saltar para o conteúdo</a>
+
+    <div class="app-shell" id="app-shell">
+      <div class="content-column">
+        <header class="app-header" aria-label="Cabeçalho da aplicação">
+          <div class="app-header__identity">
+            <div class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32"><path d="M7.5 16h17M16 7.5v17" /></svg>
+            </div>
+            <div class="app-header__copy">
+              <p class="eyebrow" id="header-context">Dados guardados neste dispositivo</p>
+              <h1 id="app-title">Início</h1>
+            </div>
+          </div>
+
+          <div class="app-header__actions" id="header-actions" aria-label="Ações gerais">
+            <button class="icon-button header-action" type="button" data-action="backup" aria-label="Backup e restauro" title="Backup e restauro">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" /></svg>
+              <span class="header-action__label">Backup</span>
+            </button>
+            <button class="icon-button header-action" type="button" data-action="settings" aria-label="Definições" title="Definições">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.95 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.95a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.95 4.6a1.7 1.7 0 0 0 1.03-1.56V3h4v.08A1.7 1.7 0 0 0 15.05 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" />
+              </svg>
+              <span class="header-action__label">Definições</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="system-banner system-banner--install" id="install-banner" aria-label="Instalar aplicação" hidden>
+          <div class="system-banner__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14" /></svg></div>
+          <div class="system-banner__copy"><strong>Instalar FISIO IF</strong><span>Acesso rápido e utilização offline.</span></div>
+          <div class="system-banner__actions">
+            <button class="button button--small button--primary" type="button" data-action="install-app">Instalar</button>
+            <button class="icon-button icon-button--small" type="button" data-action="dismiss-install" aria-label="Fechar sugestão de instalação"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+          </div>
+        </section>
+
+        <section class="system-banner system-banner--update" id="update-banner" aria-label="Atualização disponível" hidden>
+          <div class="system-banner__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18.5 9A7 7 0 0 0 6 6.5L4 9m16 6-2 2.5A7 7 0 0 1 5.5 15" /></svg></div>
+          <div class="system-banner__copy"><strong>Nova versão disponível</strong><span>Atualize quando lhe for conveniente.</span></div>
+          <div class="system-banner__actions">
+            <button class="button button--small button--primary" type="button" data-action="apply-update">Atualizar</button>
+            <button class="icon-button icon-button--small" type="button" data-action="dismiss-update" aria-label="Adiar atualização"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+          </div>
+        </section>
+
+        <main class="app-main" id="view-root" tabindex="-1">
+          <section class="view view--loading" aria-labelledby="loading-title" aria-busy="true">
+            <div class="loading-state">
+              <div class="loading-state__mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7.5 16h17M16 7.5v17" /></svg></div>
+              <h2 id="loading-title">A preparar a clínica…</h2>
+              <p>Os dados ficam apenas neste dispositivo.</p>
+              <span class="loading-state__bar" aria-hidden="true"></span>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <nav class="primary-nav" id="primary-nav" aria-label="Navegação principal">
+        <div class="primary-nav__brand" aria-hidden="true">
+          <span class="brand-mark brand-mark--sidebar"><svg viewBox="0 0 32 32"><path d="M7.5 16h17M16 7.5v17" /></svg></span>
+          <span><strong>FISIO IF</strong><small>Gestão clínica local</small></span>
+        </div>
+
+        <div class="primary-nav__items">
+          <button class="nav-item is-active" type="button" data-view="dashboard" aria-current="page">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2Z" /></svg><span>Início</span>
+          </button>
+          <button class="nav-item" type="button" data-view="agenda">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01" /></svg><span>Agenda</span>
+          </button>
+          <button class="nav-item" type="button" data-view="patients">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg><span>Pacientes</span>
+          </button>
+          <button class="nav-item" type="button" data-view="clinic">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18" /><circle cx="12" cy="12" r="9" /></svg><span>Clínica</span>
+          </button>
+          <button class="nav-item" type="button" data-view="finances">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2" /></svg><span>Finanças</span>
+          </button>
+        </div>
+
+        <div class="primary-nav__privacy">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+          <span><strong>Privado e offline</strong><small>Sem conta nem sincronização</small></span>
+        </div>
+      </nav>
+    </div>
+
+    <button class="fab" id="fab" type="button" aria-label="Adicionar" title="Adicionar" hidden>
+      <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg><span class="fab__label">Adicionar</span>
+    </button>
+
+    <dialog class="app-dialog" id="app-dialog" aria-labelledby="dialog-title">
+      <div class="dialog-shell">
+        <header class="dialog-header">
+          <div><p class="eyebrow" id="dialog-eyebrow" hidden></p><h2 id="dialog-title">Detalhes</h2></div>
+          <button class="icon-button" type="button" data-action="close-dialog" aria-label="Fechar"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+        </header>
+        <div class="dialog-body" id="dialog-body"></div>
+        <footer class="dialog-actions" id="dialog-actions"></footer>
+      </div>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <form class="confirm-dialog__shell" method="dialog">
+        <div class="confirm-dialog__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01" /><circle cx="12" cy="12" r="9" /></svg></div>
+        <h2 id="confirm-title">Confirmar ação</h2>
+        <p id="confirm-message">Tem a certeza de que pretende continuar?</p>
+        <div class="confirm-dialog__actions">
+          <button class="button button--secondary" type="submit" value="cancel" data-action="cancel-confirm">Cancelar</button>
+          <button class="button button--danger" type="submit" value="confirm" data-action="accept-confirm">Confirmar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" role="status" aria-live="polite" aria-atomic="false"></div>
+
+    <template id="empty-state-template">
+      <section class="empty-state">
+        <div class="empty-state__icon" data-empty-icon aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM8 3h8v3M8 11h8M8 15h5" /></svg></div>
+        <h2 data-empty-title>Ainda não existem registos</h2>
+        <p data-empty-message>Comece por adicionar o primeiro registo.</p>
+        <button class="button button--primary" type="button" data-empty-action>Adicionar</button>
+      </section>
+    </template>
+
+    <template id="form-shell-template">
+      <form class="entity-form" novalidate>
+        <div class="form-errors" role="alert" hidden></div>
+        <div class="form-sections" data-form-sections></div>
+        <footer class="form-actions">
+          <button class="button button--secondary" type="button" data-action="cancel-form">Cancelar</button>
+          <button class="button button--primary" type="submit">Guardar</button>
+        </footer>
+      </form>
+    </template>
+
+    <noscript>
+      <div class="noscript-message"><strong>O JavaScript está desativado.</strong><span>A FISIO IF precisa de JavaScript para funcionar e guardar dados localmente.</span></div>
+    </noscript>
+  </body>
+</html>
+
+
+
