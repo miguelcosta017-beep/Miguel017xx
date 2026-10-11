@@ -67,6 +67,17 @@ Este método é adequado ao Mac. `http://localhost:8080` no iPhone apontaria par
 
 Também é possível fazer o percurso inverso. No iPhone, o modo exato de entrega de um download pode variar com a versão do iOS e com o contexto (Safari ou aplicação instalada); se surgir uma pré-visualização ou folha de partilha, usar **Guardar em Ficheiros**. Não assumir que o ficheiro ficou guardado sem o confirmar.
 
+## Exportar para Excel
+
+1. Abrir **Backup** no cabeçalho da FISIO IF.
+2. Na área **Exportar para Excel**, tocar em **Criar Excel**.
+3. No iPhone, escolher **Guardar em Ficheiros**, AirDrop ou outra opção segura da folha de partilha.
+4. Abrir o ficheiro `.xlsx` no Excel, Numbers ou aplicação compatível.
+
+O livro inclui seis folhas: **Resumo, Pacientes, Agenda, Sessões, Avaliações e Finanças**. As datas e os valores financeiros são gravados como valores próprios do Excel, permitindo ordenar, filtrar e fazer cálculos.
+
+Esta exportação contém informação clínica e deve ser protegida como tal. É apenas uma cópia de consulta: não substitui o backup integral JSON e não pode ser importada para restaurar a FISIO IF.
+
 ### Isto não é sincronização
 
 Depois do restauro existem duas cópias independentes. Uma consulta criada no iPhone não aparece no MacBook, e vice-versa, até ser feito um novo ciclo manual de exportação e restauro. O modo **Combinar** pode juntar registos por identificador e conservar a versão mais recente, mas não deteta nem resolve alterações concorrentes ao mesmo registo; não equivale a sincronização.
@@ -117,6 +128,7 @@ O iOS não permite que esta aplicação escreva silenciosamente numa pasta arbit
 ## Checklist mensal recomendado
 
 - Criar um backup integral.
+- Criar uma exportação Excel de consulta, se necessária, e guardá-la num local protegido.
 - Confirmar que o ficheiro abre no seletor de importação.
 - Fazer um restauro de teste num perfil/dispositivo sem dados reais.
 - Confirmar os totais de pacientes, sessões e finanças.
