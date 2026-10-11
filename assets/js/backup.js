@@ -252,6 +252,15 @@ export async function validateBackup(input, { verifyChecksum = true } = {}) {
       errors.push(`sessions: a sessão ${item.id} e o respetivo pacote pertencem a pacientes diferentes.`);
     }
   }
+  const packageUseCounts = new Map();
+  normalisedData.sessions.forEach((item) => {
+    if (item.packageId) packageUseCounts.set(item.packageId, (packageUseCounts.get(item.packageId) || 0) + 1);
+  });
+  for (const item of normalisedData.packages) {
+    if ((packageUseCounts.get(item.id) || 0) > Number(item.totalSessions)) {
+      errors.push(`packages: o pacote ${item.id} tem mais sessões utilizadas do que o total contratado.`);
+    }
+  }
   for (const item of normalisedData.transactions) {
     if (item.packageId && !packages.has(item.packageId)) {
       errors.push(`transactions: o movimento ${item.id} refere um pacote inexistente.`);
