@@ -278,10 +278,6 @@ function appointmentTypeLabel(type) {
   return ({ session: "Sessão", assessment: "Avaliação", followup: "Reavaliação", other: "Outro" })[type] || "Sessão";
 }
 
-function transactionTypeLabel(type) {
-  return type === "expense" ? "Despesa" : "Receita";
-}
-
 function patientOptions(patients, current = "", { allowEmpty = false } = {}) {
   const options = [...patients]
     .sort((a, b) => String(a.name).localeCompare(String(b.name), "pt-PT"))
@@ -642,7 +638,7 @@ function transactionRow(transaction, map) {
   const automaticLabel = transaction.packageId ? `${transaction.packageSessions ? `${plural(Number(transaction.packageSessions), "sessão", "sessões")} · ` : ""}Pacote` : "Sessão avulsa";
   return `<article class="transaction-row">
     <span class="transaction-row__icon transaction-row__icon--income" aria-hidden="true">+</span>
-    <div class="transaction-row__main"><strong>${escapeHTML(transaction.description || transaction.category || transactionTypeLabel(transaction.type))}</strong><span>${escapeHTML(formatDate(transaction.date))}${transaction.patientId ? ` · ${escapeHTML(patientDisplay(map, transaction.patientId))}` : ""}${automaticLabel ? ` · ${automaticLabel}` : ""}</span></div>
+    <div class="transaction-row__main"><strong>${escapeHTML(transaction.description || transaction.category || "Recebimento")}</strong><span>${escapeHTML(formatDate(transaction.date))}${transaction.patientId ? ` · ${escapeHTML(patientDisplay(map, transaction.patientId))}` : ""}${automaticLabel ? ` · ${automaticLabel}` : ""}</span></div>
     <div class="transaction-row__amount"><strong class="money--positive">+${escapeHTML(formatCurrency(transaction.amount))}</strong><span class="status-badge status-badge--${escapeHTML(transaction.status)}">${escapeHTML(statusLabel(transaction.status))}</span></div>
   </article>`;
 }
@@ -672,7 +668,7 @@ function formActions(label = "Guardar") {
 }
 
 async function openEntityForm(entity, id = null, defaults = {}) {
-  const storeMap = { patient: "patients", appointment: "appointments", package: "packages", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
+  const storeMap = { patient: "patients", appointment: "appointments", package: "packages", session: "sessions", evaluation: "evaluations" };
   const storeName = storeMap[entity];
   const [record, patients, appointments, packages, sessions] = await Promise.all([
     id ? getById(storeName, id) : Promise.resolve(null),
@@ -685,7 +681,7 @@ async function openEntityForm(entity, id = null, defaults = {}) {
     showToast("O registo já não existe.", "warning");
     return;
   }
-  if (entity !== "patient" && !patients.length && entity !== "transaction") {
+  if (entity !== "patient" && !patients.length) {
     showToast("Crie primeiro uma ficha de paciente.", "warning");
     await openEntityForm("patient");
     return;
@@ -697,7 +693,6 @@ async function openEntityForm(entity, id = null, defaults = {}) {
     package: [id ? "Editar pacote" : "Novo pacote", packageForm(value, patients, sessions, { editing: Boolean(id) })],
     session: [id ? "Editar sessão" : "Nova sessão", sessionForm(value, patients, appointments, packages, sessions)],
     evaluation: [id ? "Editar avaliação" : "Nova avaliação", evaluationForm(value, patients)],
-    transaction: [id ? "Editar transação" : "Nova transação", transactionForm(value, patients)],
   }[entity];
   openDialog({
     title: config[0],
@@ -910,20 +905,6 @@ function evaluationForm(evaluation, patients) {
   </div></fieldset></div>`;
 }
 
-function transactionForm(transaction, patients) {
-  return `<div class="form-sections"><fieldset class="form-section"><legend>Movimento financeiro</legend><div class="form-grid form-grid--two">
-    <div class="field"><label for="transaction-type">Tipo *</label><select id="transaction-type" name="type" required><option value="income"${selected(transaction.type || "income", "income")}>Receita</option><option value="expense"${selected(transaction.type, "expense")}>Despesa</option></select></div>
-    <div class="field"><label for="transaction-date">Data *</label><input id="transaction-date" name="date" type="date" required value="${escapeHTML(transaction.date || localISODate())}"></div>
-    <div class="field"><label for="transaction-amount">Valor (€) *</label><input id="transaction-amount" name="amount" type="number" min="0" step="0.01" required inputmode="decimal" value="${escapeHTML(transaction.amount ?? "")}"></div>
-    <div class="field"><label for="transaction-status">Estado</label><select id="transaction-status" name="status"><option value="paid"${selected(transaction.status || "paid", "paid")}>Pago</option><option value="pending"${selected(transaction.status, "pending")}>Pendente</option><option value="cancelled"${selected(transaction.status, "cancelled")}>Anulado</option></select></div>
-    <div class="field"><label for="transaction-category">Categoria</label><input id="transaction-category" name="category" list="transaction-categories" value="${escapeHTML(transaction.category)}" placeholder="Ex.: Sessão"><datalist id="transaction-categories"><option value="Sessão"><option value="Pacote"><option value="Avaliação"><option value="Material"><option value="Renda"><option value="Formação"><option value="Outro"></datalist></div>
-    <div class="field"><label for="transaction-patient">Paciente</label><select id="transaction-patient" name="patientId">${patientOptions(patients, transaction.patientId, { allowEmpty: true })}</select></div>
-    <div class="field field--wide"><label for="transaction-description">Descrição *</label><input id="transaction-description" name="description" required maxlength="220" value="${escapeHTML(transaction.description)}"></div>
-    <div class="field"><label for="transaction-method">Método</label><select id="transaction-method" name="paymentMethod"><option value=""${selected(transaction.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(transaction.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(transaction.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(transaction.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(transaction.paymentMethod, "mbway")}>MB WAY</option></select></div>
-    <div class="field field--wide"><label for="transaction-notes">Notas</label><textarea id="transaction-notes" name="notes" rows="3">${escapeHTML(transaction.notes)}</textarea></div>
-  </div></fieldset></div>`;
-}
-
 async function saveEntityForm(form) {
   if (!form.reportValidity()) return;
   const submitButton = elements.dialogActions.querySelector("[type='submit']");
@@ -934,7 +915,7 @@ async function saveEntityForm(form) {
     const entity = form.dataset.entity;
     const id = form.dataset.id || null;
     const data = Object.fromEntries(new FormData(form).entries());
-    const stores = { patient: "patients", appointment: "appointments", package: "packages", "package-payment": "transactions", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
+    const stores = { patient: "patients", appointment: "appointments", package: "packages", "package-payment": "transactions", session: "sessions", evaluation: "evaluations" };
     const store = stores[entity];
     const current = id ? await getById(store, id) : {};
     let record = { ...(current || {}), ...data };
@@ -988,10 +969,6 @@ async function saveEntityForm(form) {
         record.paymentStatus = data.paymentStatus || "pending";
         record.paymentMethod = data.paymentMethod || "";
       }
-    }
-    if (entity === "transaction") {
-      record.amount = Math.abs(Number(data.amount) || 0);
-      record.patientId = data.patientId || null;
     }
     if (entity === "package-payment") {
       const packageRecord = await getById("packages", data.packageId);
