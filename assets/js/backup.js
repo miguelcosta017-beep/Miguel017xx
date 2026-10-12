@@ -262,8 +262,23 @@ export async function validateBackup(input, { verifyChecksum = true } = {}) {
     }
   }
   for (const item of normalisedData.transactions) {
-    if (item.packageId && !packages.has(item.packageId)) {
-      errors.push(`transactions: o movimento ${item.id} refere um pacote inexistente.`);
+    if (item.packageId) {
+      const packageRecord = packages.get(item.packageId);
+      if (!packageRecord) errors.push(`transactions: o movimento ${item.id} refere um pacote inexistente.`);
+      else if (item.patientId !== packageRecord.patientId) errors.push(`transactions: o pagamento ${item.id} pertence a um paciente diferente do pacote.`);
+      if (!Number.isFinite(Number(item.amount)) || Number(item.amount) < 0) errors.push(`transactions: o pagamento ${item.id} não tem um valor válido.`);
+      if (item.packageSessions != null && (!Number.isInteger(Number(item.packageSessions)) || Number(item.packageSessions) < 1)) {
+        errors.push(`transactions: o pagamento ${item.id} não tem um número de sessões válido.`);
+      }
+    }
+  }
+  for (const packageRecord of normalisedData.packages) {
+    const price = Number(packageRecord.pricePerSession) || 0;
+    const committed = normalisedData.transactions
+      .filter((item) => item.packageId === packageRecord.id && item.type !== "expense" && item.status !== "cancelled")
+      .reduce((total, item) => total + (Number(item.packageSessions) || (price > 0 ? (Number(item.amount) || 0) / price : 0)), 0);
+    if (committed > Number(packageRecord.totalSessions) + 0.001) {
+      errors.push(`packages: o pacote ${packageRecord.id} tem pagamentos acima do total contratado.`);
     }
   }
 
