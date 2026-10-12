@@ -18,14 +18,14 @@ import {
 } from "./backup.js";
 import { shareOrDownloadExcel } from "./excel.js";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 const VALID_VIEWS = new Set(["dashboard", "agenda", "patients", "clinic", "finances"]);
 const VIEW_META = Object.freeze({
   dashboard: { title: "Início", context: "Resumo da clínica" },
   agenda: { title: "Agenda", context: "Marcações e disponibilidade" },
   patients: { title: "Pacientes", context: "Base clínica local" },
   clinic: { title: "Clínica", context: "Sessões e avaliações" },
-  finances: { title: "Finanças", context: "Receitas, despesas e pendentes" },
+  finances: { title: "Finanças", context: "Recebimentos de pacientes" },
 });
 const STORE_LABELS = Object.freeze({
   patients: "Pacientes",
@@ -63,7 +63,11 @@ const state = {
   agendaDate: localISODate(),
   agendaStatus: "all",
   clinicTab: "sessions",
+  financePeriod: "month",
   financeMonth: localISODate().slice(0, 7),
+  financeYear: localISODate().slice(0, 4),
+  financePatientId: "all",
+  financeStatus: "all",
   pendingBackup: null,
   installPrompt: null,
   serviceWorkerRegistration: null,
@@ -218,8 +222,25 @@ function packageRemaining(packageRecord, usage) {
 }
 
 function packageStatus(packageRecord, usage) {
-  if (packageRecord.paymentStatus === "cancelled") return "cancelled";
+  if (packageRecord.status === "cancelled" || packageRecord.paymentStatus === "cancelled") return "cancelled";
   return packageRemaining(packageRecord, usage) > 0 ? "active" : "completed";
+}
+
+function isClinicalReceipt(transaction) {
+  return transaction.type !== "expense" && Boolean(transaction.sessionId || transaction.packageId);
+}
+
+function packagePaymentSummary(packageRecord, transactions) {
+  const payments = sortNewest(transactions.filter((item) => item.packageId === packageRecord.id && item.type !== "expense"), "date");
+  const active = payments.filter((item) => item.status !== "cancelled");
+  const paidAmount = sum(active.filter((item) => item.status === "paid"), (item) => item.amount);
+  const pendingAmount = sum(active.filter((item) => item.status === "pending"), (item) => item.amount);
+  const price = Math.max(0, Number(packageRecord.pricePerSession) || 0);
+  const sessionsFor = (items) => items.reduce((total, item) => total + (Number(item.packageSessions) || (price > 0 ? (Number(item.amount) || 0) / price : 0)), 0);
+  const paidSessions = sessionsFor(active.filter((item) => item.status === "paid"));
+  const pendingSessions = sessionsFor(active.filter((item) => item.status === "pending"));
+  const totalAmount = Number(packageRecord.totalAmount) || (Number(packageRecord.totalSessions) || 0) * price;
+  return { payments, paidAmount, pendingAmount, paidSessions, pendingSessions, totalAmount, outstandingAmount: Math.max(0, totalAmount - paidAmount), uncommittedAmount: Math.max(0, totalAmount - paidAmount - pendingAmount) };
 }
 
 async function getSetting(key, fallback = undefined) {
@@ -305,7 +326,6 @@ function configureShell() {
     agenda: ["add-appointment", "Nova marcação"],
     patients: ["add-patient", "Novo paciente"],
     clinic: [state.clinicTab === "evaluations" ? "add-evaluation" : "add-session", state.clinicTab === "evaluations" ? "Nova avaliação" : "Nova sessão"],
-    finances: ["add-transaction", "Nova transação"],
   };
   const config = fabActions[state.view];
   elements.fab.hidden = !config || Boolean(state.patientId);
@@ -360,9 +380,9 @@ async function renderDashboard() {
   const month = today.slice(0, 7);
   const todaysAppointments = sortOldest(appointments.filter((item) => String(item.start || "").slice(0, 10) === today));
   const upcoming = sortOldest(appointments.filter((item) => String(item.start || "") >= nowText.slice(0, 16) && !["cancelled", "completed"].includes(item.status))).slice(0, 5);
-  const monthTransactions = transactions.filter((item) => String(item.date || "").startsWith(month) && item.status !== "cancelled");
-  const paidIncome = sum(monthTransactions.filter((item) => item.type === "income" && item.status === "paid"), (item) => item.amount);
-  const pendingIncome = sum(monthTransactions.filter((item) => item.type === "income" && item.status === "pending"), (item) => item.amount);
+  const monthTransactions = transactions.filter((item) => isClinicalReceipt(item) && String(item.date || "").startsWith(month) && item.status !== "cancelled");
+  const paidIncome = sum(monthTransactions.filter((item) => item.status === "paid"), (item) => item.amount);
+  const pendingIncome = sum(monthTransactions.filter((item) => item.status === "pending"), (item) => item.amount);
   const activePatients = patients.filter((patient) => patient.active !== false).length;
   const map = patientMap(patients);
   const reminderDays = Number(await getSetting("backupReminderDays", 14)) || 14;
@@ -404,7 +424,7 @@ async function renderDashboard() {
       <button class="action-tile" type="button" data-action="add-patient"><span class="action-tile__icon">+</span><span><strong>Novo paciente</strong><small>Criar ficha clínica</small></span></button>
       <button class="action-tile" type="button" data-action="add-appointment"><span class="action-tile__icon">+</span><span><strong>Nova marcação</strong><small>Adicionar à agenda</small></span></button>
       <button class="action-tile" type="button" data-action="add-session"><span class="action-tile__icon">+</span><span><strong>Registar sessão</strong><small>Tratamento e pagamento</small></span></button>
-      <button class="action-tile" type="button" data-action="add-transaction"><span class="action-tile__icon">+</span><span><strong>Movimento</strong><small>Receita ou despesa</small></span></button>
+      <button class="action-tile" type="button" data-action="go-view" data-target-view="finances"><span class="action-tile__icon">€</span><span><strong>Recebimentos</strong><small>Pagos e pendentes</small></span></button>
     </div>
 
     ${!hasData ? `<aside class="notice notice--info"><div><strong>Quer explorar uma clínica preenchida?</strong><p>Adicione dados fictícios de demonstração; pode apagá-los quando quiser.</p></div><button class="button button--small button--secondary" type="button" data-action="create-demo">Adicionar demonstração</button></aside>` : ""}
@@ -485,8 +505,8 @@ async function renderPatientDetail(patientId) {
   const packages = sortNewest(collections.packages.filter((item) => item.patientId === patientId), "purchaseDate");
   const sessions = sortNewest(collections.sessions.filter((item) => item.patientId === patientId));
   const evaluations = sortNewest(collections.evaluations.filter((item) => item.patientId === patientId));
-  const transactions = sortNewest(collections.transactions.filter((item) => item.patientId === patientId));
-  const balance = sum(transactions.filter((item) => item.type === "income" && item.status === "paid"), (item) => item.amount) - sum(transactions.filter((item) => item.type === "expense" && item.status === "paid"), (item) => item.amount);
+  const transactions = sortNewest(collections.transactions.filter((item) => item.patientId === patientId && isClinicalReceipt(item)));
+  const received = sum(transactions.filter((item) => item.status === "paid"), (item) => item.amount);
   const usage = packageUsageMap(sessions);
   const packageMap = new Map(packages.map((item) => [item.id, item]));
   const activePackages = packages.filter((item) => packageStatus(item, usage) === "active").length;
@@ -498,15 +518,15 @@ async function renderPatientDetail(patientId) {
       <div class="patient-hero__main"><div class="patient-hero__title"><h2 id="patient-heading">${escapeHTML(patient.name)}</h2><span class="status-badge status-badge--${patient.active === false ? "inactive" : "active"}">${patient.active === false ? "Inativo" : "Ativo"}</span></div><p>${escapeHTML([patient.phone, patient.email].filter(Boolean).join(" · ") || "Sem contactos registados")}</p></div>
       <div class="patient-hero__actions"><button class="button button--secondary" type="button" data-action="edit-patient" data-id="${escapeHTML(patient.id)}">Editar ficha</button><button class="icon-button text-danger" type="button" data-action="delete-patient" data-id="${escapeHTML(patient.id)}" aria-label="Eliminar ficha"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6" /></svg></button></div>
     </article>
-    <div class="metrics-grid patient-metrics">${metricCard("Sessões", String(sessions.length))}${metricCard("Pacotes ativos", String(activePackages))}${metricCard("Avaliações", String(evaluations.length))}${metricCard("Marcações", String(appointments.length))}${metricCard("Total recebido", formatCurrency(balance))}</div>
-    <div class="patient-actions"><button class="button button--primary" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Nova sessão</button><button class="button button--secondary" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Novo pacote</button><button class="button button--secondary" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Nova avaliação</button><button class="button button--secondary" type="button" data-action="add-appointment" data-patient-id="${escapeHTML(patient.id)}">Marcar</button><button class="button button--secondary" type="button" data-action="add-transaction" data-patient-id="${escapeHTML(patient.id)}">Movimento</button></div>
+    <div class="metrics-grid patient-metrics">${metricCard("Sessões", String(sessions.length))}${metricCard("Pacotes ativos", String(activePackages))}${metricCard("Avaliações", String(evaluations.length))}${metricCard("Marcações", String(appointments.length))}${metricCard("Total recebido", formatCurrency(received))}</div>
+    <div class="patient-actions"><button class="button button--primary" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Nova sessão</button><button class="button button--secondary" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Novo pacote</button><button class="button button--secondary" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Nova avaliação</button><button class="button button--secondary" type="button" data-action="add-appointment" data-patient-id="${escapeHTML(patient.id)}">Marcar</button></div>
     <div class="view-grid view-grid--sidebar">
       <div class="card-stack">
         <article class="card"><header class="card__header"><div><p class="eyebrow">Histórico clínico</p><h3>Sessões</h3></div><button class="button button--small button--ghost" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${sessions.length ? sessions.slice(0, 8).map((session) => sessionCard(session, new Map([[patient.id, patient]]), packageMap, usage)).join("") : `<div class="inline-empty"><span>Sem sessões registadas.</span></div>`}</div></article>
         <article class="card"><header class="card__header"><div><p class="eyebrow">Avaliação</p><h3>Avaliações clínicas</h3></div><button class="button button--small button--ghost" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${evaluations.length ? evaluations.slice(0, 6).map((evaluation) => evaluationCard(evaluation, new Map([[patient.id, patient]]))).join("") : `<div class="inline-empty"><span>Sem avaliações registadas.</span></div>`}</div></article>
       </div>
       <div class="card-stack">
-        <article class="card"><header class="card__header"><div><p class="eyebrow">Pré-pagamento</p><h3>Pacotes de sessões</h3></div><button class="button button--small button--ghost" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${packages.length ? packages.map((item) => packageCard(item, usage)).join("") : `<div class="inline-empty"><span>Sem pacotes registados.</span></div>`}</div></article>
+        <article class="card"><header class="card__header"><div><p class="eyebrow">Sessões e pagamentos</p><h3>Pacotes de sessões</h3></div><button class="button button--small button--ghost" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body package-list">${packages.length ? packages.map((item) => packageCard(item, usage, transactions)).join("") : `<div class="inline-empty"><span>Sem pacotes registados.</span></div>`}</div></article>
         <article class="card"><header class="card__header"><h3>Dados do paciente</h3></header><div class="card__body"><dl class="detail-list"><div><dt>Nascimento</dt><dd>${escapeHTML(formatDate(patient.birthDate, "Não indicado"))}</dd></div><div><dt>NIF</dt><dd>${escapeHTML(patient.nif || "Não indicado")}</dd></div><div><dt>Morada</dt><dd>${escapeHTML(patient.address || "Não indicada")}</dd></div><div><dt>Emergência</dt><dd>${escapeHTML(patient.emergencyContact || "Não indicado")}</dd></div></dl>${patient.clinicalNotes ? `<div class="clinical-note"><strong>Notas clínicas</strong><p>${escapeHTML(patient.clinicalNotes)}</p></div>` : ""}</div></article>
         <article class="card"><header class="card__header"><h3>Próximas marcações</h3></header><div class="card__body">${appointments.filter((item) => !["completed", "cancelled"].includes(item.status)).slice(0, 4).map((appointment) => `<button class="compact-record" type="button" data-action="edit-appointment" data-id="${escapeHTML(appointment.id)}"><span><strong>${escapeHTML(formatDateTime(appointment.start))}</strong><small>${escapeHTML(appointmentTypeLabel(appointment.type))}</small></span><span class="status-badge status-badge--${escapeHTML(appointment.status)}">${escapeHTML(statusLabel(appointment.status))}</span></button>`).join("") || `<div class="inline-empty"><span>Sem marcações futuras.</span></div>`}</div></article>
       </div>
@@ -539,13 +559,20 @@ function sessionCard(session, map, packages = new Map(), usage = new Map()) {
   </article>`;
 }
 
-function packageCard(packageRecord, usage) {
+function packageCard(packageRecord, usage, transactions = []) {
   const used = usage.get(packageRecord.id) || 0;
   const remaining = packageRemaining(packageRecord, usage);
   const status = packageStatus(packageRecord, usage);
-  return `<article class="package-record compact-record">
-    <span><strong>${escapeHTML(packageRecord.name || `Pacote de ${packageRecord.totalSessions} sessões`)}</strong><small>${remaining} de ${Number(packageRecord.totalSessions) || 0} disponíveis · ${escapeHTML(formatCurrency(packageRecord.pricePerSession))}/sessão · ${escapeHTML(statusLabel(packageRecord.paymentStatus))}</small><span class="package-progress" aria-label="${used} de ${Number(packageRecord.totalSessions) || 0} sessões utilizadas"><i style="--package-progress:${Math.min(100, Math.round(used / Math.max(1, Number(packageRecord.totalSessions) || 1) * 100))}%"></i></span></span>
-    <span class="package-record__actions"><span class="status-badge status-badge--${status}">${status === "completed" ? "Concluído" : status === "cancelled" ? "Anulado" : "Ativo"}</span><button class="icon-button" type="button" data-action="edit-package" data-id="${escapeHTML(packageRecord.id)}" aria-label="Editar pacote"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="packages" data-id="${escapeHTML(packageRecord.id)}" aria-label="Eliminar pacote"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></span>
+  const payment = packagePaymentSummary(packageRecord, transactions);
+  const paidSessions = Math.min(Number(packageRecord.totalSessions) || 0, payment.paidSessions);
+  const history = payment.payments.slice(0, 4).map((item) => `<div class="package-payment-row"><span><strong>${escapeHTML(formatCurrency(item.amount))}</strong><small>${escapeHTML(formatDate(item.date))}${item.packageSessions ? ` · ${escapeHTML(plural(Number(item.packageSessions), "sessão", "sessões"))}` : ""}</small></span><span class="package-payment-row__end"><span class="status-badge status-badge--${escapeHTML(item.status)}">${escapeHTML(statusLabel(item.status))}</span><button class="icon-button" type="button" data-action="edit-package-payment" data-id="${escapeHTML(item.id)}" data-package-id="${escapeHTML(packageRecord.id)}" aria-label="Editar pagamento"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="transactions" data-id="${escapeHTML(item.id)}" aria-label="Eliminar pagamento"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1-14h8l1-14" /></svg></button></span></div>`).join("");
+  return `<article class="package-card">
+    <header class="package-card__header"><div><strong>${escapeHTML(packageRecord.name || `Pacote de ${packageRecord.totalSessions} sessões`)}</strong><small>${escapeHTML(formatCurrency(packageRecord.pricePerSession))}/sessão · total ${escapeHTML(formatCurrency(payment.totalAmount))}</small></div><span class="status-badge status-badge--${status}">${status === "completed" ? "Concluído" : status === "cancelled" ? "Anulado" : "Ativo"}</span></header>
+    <div class="package-stat-grid"><div><span>Realizadas</span><strong>${used} / ${Number(packageRecord.totalSessions) || 0}</strong><small>${remaining} disponíveis</small></div><div><span>Pagas</span><strong>${Number.isInteger(paidSessions) ? paidSessions : paidSessions.toFixed(1)} / ${Number(packageRecord.totalSessions) || 0}</strong><small>${escapeHTML(formatCurrency(payment.paidAmount))} recebido</small></div></div>
+    <span class="package-progress" aria-label="${used} de ${Number(packageRecord.totalSessions) || 0} sessões realizadas"><i style="--package-progress:${Math.min(100, Math.round(used / Math.max(1, Number(packageRecord.totalSessions) || 1) * 100))}%"></i></span>
+    ${payment.pendingAmount ? `<p class="package-pending"><strong>${escapeHTML(formatCurrency(payment.pendingAmount))}</strong> pendente</p>` : ""}
+    <div class="package-card__actions"><button class="button button--small button--primary" type="button" data-action="add-package-payment" data-package-id="${escapeHTML(packageRecord.id)}"${status === "cancelled" || payment.uncommittedAmount <= 0 ? " disabled" : ""}>Registar pagamento</button><button class="button button--small button--ghost" type="button" data-action="edit-package" data-id="${escapeHTML(packageRecord.id)}">Editar pacote</button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="packages" data-id="${escapeHTML(packageRecord.id)}" aria-label="Eliminar pacote"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
+    ${history ? `<div class="package-payment-history"><p class="eyebrow">Histórico de pagamentos</p>${history}</div>` : `<p class="package-no-payments">Ainda sem pagamentos registados.</p>`}
   </article>`;
 }
 
@@ -560,17 +587,32 @@ function evaluationCard(evaluation, map) {
 async function renderFinances() {
   const { transactions, patients } = await loadCollections("transactions", "patients");
   const map = patientMap(patients);
-  const monthly = sortNewest(transactions.filter((item) => String(item.date || "").startsWith(state.financeMonth)));
-  const active = monthly.filter((item) => item.status !== "cancelled");
-  const income = sum(active.filter((item) => item.type === "income" && item.status === "paid"), (item) => item.amount);
-  const expenses = sum(active.filter((item) => item.type === "expense" && item.status === "paid"), (item) => item.amount);
-  const pending = sum(active.filter((item) => item.type === "income" && item.status === "pending"), (item) => item.amount);
-  const balance = income - expenses;
+  const periodKey = state.financePeriod === "year" ? state.financeYear : state.financeMonth;
+  const periodLabel = state.financePeriod === "year" ? `Ano ${state.financeYear}` : monthLabel(state.financeMonth);
+  const receipts = transactions.filter((item) => isClinicalReceipt(item) && item.status !== "cancelled");
+  const periodReceipts = receipts.filter((item) => String(item.date || "").startsWith(periodKey));
+  const patientReceipts = periodReceipts.filter((item) => state.financePatientId === "all" || item.patientId === state.financePatientId);
+  const visibleReceipts = sortNewest(patientReceipts.filter((item) => state.financeStatus === "all" || item.status === state.financeStatus));
+  const paid = sum(patientReceipts.filter((item) => item.status === "paid"), (item) => item.amount);
+  const pending = sum(patientReceipts.filter((item) => item.status === "pending"), (item) => item.amount);
+  const patientFilterOptions = [...patients].sort((a, b) => String(a.name).localeCompare(String(b.name), "pt-PT")).map((patient) => `<option value="${escapeHTML(patient.id)}"${selected(state.financePatientId, patient.id)}>${escapeHTML(patient.name)}</option>`).join("");
+  const annualRows = state.financePeriod === "year" ? Array.from({ length: 12 }, (_, index) => {
+    const month = `${state.financeYear}-${String(index + 1).padStart(2, "0")}`;
+    const monthly = patientReceipts.filter((item) => String(item.date || "").startsWith(month));
+    const monthlyPaid = sum(monthly.filter((item) => item.status === "paid"), (item) => item.amount);
+    const monthlyPending = sum(monthly.filter((item) => item.status === "pending"), (item) => item.amount);
+    return `<tr><th scope="row">${escapeHTML(monthLabel(month).replace(` de ${state.financeYear}`, ""))}</th><td>${escapeHTML(formatCurrency(monthlyPaid))}</td><td>${escapeHTML(formatCurrency(monthlyPending))}</td><td>${escapeHTML(formatCurrency(monthlyPaid + monthlyPending))}</td></tr>`;
+  }).join("") : "";
   return `<section class="view" aria-labelledby="finances-heading">
-    <div class="view-header"><div><h2 id="finances-heading">Finanças</h2><p>Visão mensal simples, sem faturação externa.</p></div><button class="button button--primary" type="button" data-action="add-transaction">Nova transação</button></div>
-    <div class="month-toolbar card"><button class="icon-button" type="button" data-action="finance-prev" aria-label="Mês anterior"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg></button><label><span class="visually-hidden">Mês</span><input id="finance-month" type="month" value="${escapeHTML(state.financeMonth)}"></label><button class="icon-button" type="button" data-action="finance-next" aria-label="Mês seguinte"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></button><strong>${escapeHTML(monthLabel(state.financeMonth))}</strong></div>
-    <div class="metrics-grid finance-metrics">${metricCard("Receitas", formatCurrency(income), "Recebidas", "success")}${metricCard("Despesas", formatCurrency(expenses), "Pagas", "danger")}${metricCard("Pendentes", formatCurrency(pending), "Por receber", "warning")}${metricCard("Saldo", formatCurrency(balance), "Receitas − despesas", balance >= 0 ? "success" : "danger")}</div>
-    <article class="card"><header class="card__header"><div><p class="eyebrow">${escapeHTML(monthLabel(state.financeMonth))}</p><h3>Movimentos</h3></div><span class="badge">${plural(monthly.length, "movimento")}</span></header><div class="card__body card__body--flush">${monthly.length ? `<div class="transaction-list">${monthly.map((transaction) => transactionRow(transaction, map)).join("")}</div>` : `<div class="inline-empty inline-empty--roomy"><strong>Sem movimentos neste mês</strong><span>Adicione uma receita ou despesa.</span></div>`}</div></article>
+    <div class="view-header"><div><h2 id="finances-heading">Recebimentos</h2><p>Dashboard dos pagamentos registados nas sessões e nos pacotes.</p></div></div>
+    <div class="finance-dashboard-filters card">
+      <div class="segmented-control" role="tablist" aria-label="Período"><button type="button" role="tab" data-action="finance-period" data-period="month" aria-selected="${state.financePeriod === "month"}" class="${state.financePeriod === "month" ? "is-active" : ""}">Mensal</button><button type="button" role="tab" data-action="finance-period" data-period="year" aria-selected="${state.financePeriod === "year"}" class="${state.financePeriod === "year" ? "is-active" : ""}">Anual</button></div>
+      <div class="finance-period-control"><button class="icon-button" type="button" data-action="finance-prev" aria-label="Período anterior"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg></button>${state.financePeriod === "month" ? `<label><span>Mês</span><input id="finance-month" type="month" value="${escapeHTML(state.financeMonth)}"></label>` : `<label><span>Ano</span><input id="finance-year" type="number" min="2000" max="2100" step="1" inputmode="numeric" value="${escapeHTML(state.financeYear)}"></label>`}<button class="icon-button" type="button" data-action="finance-next" aria-label="Período seguinte"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></button><strong>${escapeHTML(periodLabel)}</strong></div>
+      <div class="finance-filter-grid"><label><span>Paciente</span><select id="finance-patient"><option value="all"${selected(state.financePatientId, "all")}>Todos os pacientes</option>${patientFilterOptions}</select></label><label><span>Estado</span><select id="finance-status"><option value="all"${selected(state.financeStatus, "all")}>Pagos e pendentes</option><option value="paid"${selected(state.financeStatus, "paid")}>Pago</option><option value="pending"${selected(state.financeStatus, "pending")}>Pendente</option></select></label></div>
+    </div>
+    <div class="metrics-grid finance-metrics">${metricCard("Recebido", formatCurrency(paid), periodLabel, "success")}${metricCard("Pendente", formatCurrency(pending), "Por receber", "warning")}${metricCard("Total previsto", formatCurrency(paid + pending), "Pago + pendente")}${metricCard("Registos", String(patientReceipts.length), plural(patientReceipts.length, "recebimento"))}</div>
+    ${state.financePeriod === "year" ? `<article class="card finance-year-card"><header class="card__header"><div><p class="eyebrow">Histórico mensal</p><h3>${escapeHTML(state.financeYear)}</h3></div></header><div class="card__body card__body--flush"><div class="table-scroll"><table class="finance-history-table"><thead><tr><th>Mês</th><th>Pago</th><th>Pendente</th><th>Total</th></tr></thead><tbody>${annualRows}</tbody></table></div></div></article>` : ""}
+    <article class="card"><header class="card__header"><div><p class="eyebrow">${escapeHTML(periodLabel)}</p><h3>Histórico de recebimentos</h3></div><span class="badge">${plural(visibleReceipts.length, "registo")}</span></header><div class="card__body card__body--flush">${visibleReceipts.length ? `<div class="transaction-list">${visibleReceipts.map((transaction) => transactionRow(transaction, map)).join("")}</div>` : `<div class="inline-empty inline-empty--roomy"><strong>Sem recebimentos neste filtro</strong><span>Os pagamentos são criados na sessão avulsa ou no pacote do paciente.</span></div>`}</div></article>
   </section>`;
 }
 
@@ -587,13 +629,21 @@ function shiftMonth(month, amount) {
   return localISODate(date).slice(0, 7);
 }
 
+function shiftFinancePeriod(amount) {
+  if (state.financePeriod === "year") {
+    state.financeYear = String(Math.max(2000, Math.min(2100, Number(state.financeYear) + amount)));
+  } else {
+    state.financeMonth = shiftMonth(state.financeMonth, amount);
+    state.financeYear = state.financeMonth.slice(0, 4);
+  }
+}
+
 function transactionRow(transaction, map) {
-  const automaticLabel = transaction.packageId ? "Pacote" : transaction.sessionId ? "Sessão" : "";
+  const automaticLabel = transaction.packageId ? `${transaction.packageSessions ? `${plural(Number(transaction.packageSessions), "sessão", "sessões")} · ` : ""}Pacote` : "Sessão avulsa";
   return `<article class="transaction-row">
-    <span class="transaction-row__icon transaction-row__icon--${escapeHTML(transaction.type)}" aria-hidden="true">${transaction.type === "expense" ? "−" : "+"}</span>
+    <span class="transaction-row__icon transaction-row__icon--income" aria-hidden="true">+</span>
     <div class="transaction-row__main"><strong>${escapeHTML(transaction.description || transaction.category || transactionTypeLabel(transaction.type))}</strong><span>${escapeHTML(formatDate(transaction.date))}${transaction.patientId ? ` · ${escapeHTML(patientDisplay(map, transaction.patientId))}` : ""}${automaticLabel ? ` · ${automaticLabel}` : ""}</span></div>
-    <div class="transaction-row__amount"><strong class="${transaction.type === "expense" ? "money--negative" : "money--positive"}">${transaction.type === "expense" ? "−" : "+"}${escapeHTML(formatCurrency(transaction.amount))}</strong><span class="status-badge status-badge--${escapeHTML(transaction.status)}">${escapeHTML(statusLabel(transaction.status))}</span></div>
-    <div class="transaction-row__actions"><button class="icon-button" type="button" data-action="edit-transaction" data-id="${escapeHTML(transaction.id)}" aria-label="Editar movimento"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="transactions" data-id="${escapeHTML(transaction.id)}" aria-label="Eliminar movimento"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
+    <div class="transaction-row__amount"><strong class="money--positive">+${escapeHTML(formatCurrency(transaction.amount))}</strong><span class="status-badge status-badge--${escapeHTML(transaction.status)}">${escapeHTML(statusLabel(transaction.status))}</span></div>
   </article>`;
 }
 
@@ -659,6 +709,32 @@ async function openEntityForm(entity, id = null, defaults = {}) {
   if (entity === "package") updatePackageTotalPreview();
 }
 
+async function openPackagePaymentForm(packageId, paymentId = null) {
+  const [packageRecord, payment, transactions, patients] = await Promise.all([
+    getById("packages", packageId),
+    paymentId ? getById("transactions", paymentId) : Promise.resolve(null),
+    getAll("transactions"),
+    getAll("patients"),
+  ]);
+  if (!packageRecord) return showToast("O pacote já não existe.", "warning");
+  if (paymentId && (!payment || payment.packageId !== packageId)) return showToast("O pagamento já não existe.", "warning");
+  const otherTransactions = transactions.filter((item) => item.id !== paymentId);
+  const summary = packagePaymentSummary(packageRecord, otherTransactions);
+  const price = Math.max(0, Number(packageRecord.pricePerSession) || 0);
+  const currentSessions = payment ? Math.max(1, Number(payment.packageSessions) || (price > 0 ? Math.round((Number(payment.amount) || 0) / price) : 1)) : 1;
+  const committedSessions = summary.paidSessions + summary.pendingSessions;
+  const maximumSessions = Math.max(currentSessions, Math.floor((Number(packageRecord.totalSessions) || 0) - committedSessions));
+  if (!paymentId && maximumSessions < 1) return showToast("O valor total deste pacote já está pago ou pendente.", "warning", 6000);
+  const patient = patientMap(patients).get(packageRecord.patientId);
+  openDialog({
+    title: paymentId ? "Editar pagamento" : "Registar pagamento",
+    eyebrow: `${patient?.name || "Paciente"} · ${packageRecord.name || "Pacote"}`,
+    body: `<form id="entity-form" class="entity-form" data-entity="package-payment" data-id="${escapeHTML(paymentId || "")}" novalidate>${packagePaymentForm(payment || {}, packageRecord, maximumSessions, currentSessions)}<div class="form-errors" role="alert" hidden></div></form>`,
+    actions: formActions(paymentId ? "Guardar alterações" : "Guardar pagamento"),
+  });
+  updatePackagePaymentPreview();
+}
+
 function patientForm(patient) {
   return `<div class="form-sections"><fieldset class="form-section"><legend>Identificação</legend><div class="form-grid form-grid--two">
     <div class="field field--wide"><label for="patient-name">Nome completo *</label><input id="patient-name" name="name" required maxlength="160" autocomplete="name" value="${escapeHTML(patient.name)}"></div>
@@ -692,18 +768,22 @@ function packageForm(packageRecord, patients, sessions, { editing = false } = {}
   const patientField = editing
     ? `<input type="hidden" name="patientId" value="${escapeHTML(packageRecord.patientId)}"><select id="package-patient" disabled>${patientOptions(patients, packageRecord.patientId)}</select>`
     : `<select id="package-patient" name="patientId" required><option value="">Selecionar…</option>${patientOptions(patients, packageRecord.patientId)}</select>`;
+  const packageState = packageRecord.status || (packageRecord.paymentStatus === "cancelled" ? "cancelled" : "active");
   return `<div class="form-sections"><fieldset class="form-section"><legend>Pacote de sessões</legend><div class="form-grid form-grid--two">
     <div class="field"><label for="package-patient">Paciente *</label>${patientField}</div>
     <div class="field"><label for="package-date">Data da compra *</label><input id="package-date" name="purchaseDate" type="date" required value="${escapeHTML(packageRecord.purchaseDate || localISODate())}"></div>
     <div class="field field--wide"><label for="package-name">Nome do pacote *</label><input id="package-name" name="name" required maxlength="120" value="${escapeHTML(packageRecord.name || "Pacote de fisioterapia")}" placeholder="Ex.: Pacote de 6 sessões"></div>
     <div class="field"><label for="package-sessions">Número de sessões *</label><input id="package-sessions" name="totalSessions" type="number" min="${Math.max(1, used)}" max="200" step="1" required inputmode="numeric" value="${escapeHTML(totalSessions)}">${used ? `<p class="field__hint">Já utilizadas: ${used}. O total não pode ser inferior.</p>` : ""}</div>
     <div class="field"><label for="package-price">Preço por sessão (€) *</label><input id="package-price" name="pricePerSession" type="number" min="0" step="0.01" required inputmode="decimal" value="${escapeHTML(pricePerSession)}"></div>
-  </div><div class="package-total-preview"><span>Total do pacote</span><strong id="package-total-preview">${escapeHTML(formatCurrency(totalSessions * pricePerSession))}</strong></div></fieldset>
-  <fieldset class="form-section"><legend>Recebimento</legend><div class="form-grid form-grid--two">
-    <div class="field"><label for="package-payment">Estado</label><select id="package-payment" name="paymentStatus"><option value="paid"${selected(packageRecord.paymentStatus || "paid", "paid")}>Pago</option><option value="pending"${selected(packageRecord.paymentStatus, "pending")}>Pendente</option><option value="cancelled"${selected(packageRecord.paymentStatus, "cancelled")}>Anulado</option></select></div>
-    <div class="field"><label for="package-method">Método</label><select id="package-method" name="paymentMethod"><option value=""${selected(packageRecord.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(packageRecord.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(packageRecord.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(packageRecord.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(packageRecord.paymentMethod, "mbway")}>MB WAY</option></select></div>
+    <div class="field"><label for="package-status">Estado do pacote</label><select id="package-status" name="status"><option value="active"${selected(packageState, "active")}>Ativo</option><option value="cancelled"${selected(packageState, "cancelled")}>Anulado</option></select></div>
     <div class="field field--wide"><label for="package-notes">Notas</label><textarea id="package-notes" name="notes" rows="3" placeholder="Condições ou observações do pacote…">${escapeHTML(packageRecord.notes)}</textarea></div>
-  </div><p class="form-footnote">A receita é registada uma única vez pelo valor total do pacote. As sessões utilizadas não criam novas receitas.</p></fieldset></div>`;
+  </div><div class="package-total-preview"><span>Total do pacote</span><strong id="package-total-preview">${escapeHTML(formatCurrency(totalSessions * pricePerSession))}</strong></div></fieldset>
+  ${editing ? `<fieldset class="form-section"><legend>Pagamentos</legend><p class="form-footnote">Os pagamentos são independentes das sessões realizadas. Depois de guardar, use <strong>Registar pagamento</strong> no cartão do pacote.</p></fieldset>` : `<fieldset class="form-section"><legend>Pagamento inicial opcional</legend><div class="form-grid form-grid--two">
+    <div class="field"><label for="package-initial-sessions">Sessões pagas agora</label><input id="package-initial-sessions" name="initialPaymentSessions" type="number" min="0" max="${escapeHTML(totalSessions)}" step="1" inputmode="numeric" value="0"><p class="field__hint">Pode deixar a zero e registar o pagamento mais tarde.</p></div>
+    <div class="field"><label for="package-initial-date">Data do pagamento</label><input id="package-initial-date" name="initialPaymentDate" type="date" value="${escapeHTML(packageRecord.purchaseDate || localISODate())}"></div>
+    <div class="field"><label for="package-initial-status">Estado</label><select id="package-initial-status" name="initialPaymentStatus"><option value="paid">Pago</option><option value="pending">Pendente</option></select></div>
+    <div class="field"><label for="package-initial-method">Método</label><select id="package-initial-method" name="initialPaymentMethod"><option value="">Não indicado</option><option value="cash">Numerário</option><option value="card">Cartão</option><option value="transfer">Transferência</option><option value="mbway">MB WAY</option></select></div>
+  </div><div class="package-total-preview"><span>Valor deste pagamento</span><strong id="package-initial-payment-preview">${escapeHTML(formatCurrency(0))}</strong></div><p class="form-footnote">Este pagamento não altera o número de sessões realizadas. A utilização só é descontada quando registar cada sessão clínica.</p></fieldset>`}</div>`;
 }
 
 function sessionForm(session, patients, appointments, packages, sessions) {
@@ -732,12 +812,12 @@ function sessionForm(session, patients, appointments, packages, sessions) {
     <div class="field field--wide"><label for="session-treatment">Tratamento realizado *</label><textarea id="session-treatment" name="treatment" rows="5" required placeholder="Técnicas, resposta e evolução…">${escapeHTML(session.treatment)}</textarea></div>
     <div class="field field--wide"><label for="session-exercises">Exercícios / plano domiciliário</label><textarea id="session-exercises" name="exercises" rows="4" placeholder="Exercícios, séries, frequência e progressões…">${escapeHTML(session.exercises)}</textarea></div>
     <div class="field field--wide"><label for="session-notes">Notas adicionais</label><textarea id="session-notes" name="notes" rows="3">${escapeHTML(session.notes)}</textarea></div>
-  </div></fieldset><fieldset class="form-section"><legend>Pagamento</legend><div class="form-grid form-grid--three">
-    <div class="field field--wide"><label for="session-package">Pacote</label><select id="session-package" name="packageId"><option value="">Sessão avulsa</option>${packageOptions}</select><p class="field__hint" id="session-package-hint">Escolha um pacote ativo para descontar automaticamente uma utilização.</p></div>
+  </div></fieldset><fieldset class="form-section"><legend>Modalidade e recebimento</legend><div class="form-grid form-grid--three">
+    <div class="field field--wide"><label for="session-package">Sessão avulsa ou incluída em pacote</label><select id="session-package" name="packageId"><option value="">Sessão avulsa</option>${packageOptions}</select><p class="field__hint" id="session-package-hint">Escolha um pacote ativo para descontar uma sessão realizada. Os pagamentos do pacote são registados separadamente.</p></div>
     <div class="field"><label for="session-value">Valor (€)</label><input id="session-value" name="value" type="number" min="0" step="0.01" inputmode="decimal" value="${escapeHTML(session.value ?? "")}"></div>
     <div class="field"><label for="session-payment">Estado</label><select id="session-payment" name="paymentStatus"><option value="pending"${selected(session.paymentStatus || "pending", "pending")}>Pendente</option><option value="paid"${selected(session.paymentStatus, "paid")}>Pago</option><option value="waived"${selected(session.paymentStatus, "waived")}>Isento</option><option value="package"${selected(session.paymentStatus, "package")}>Incluída no pacote</option></select></div>
     <div class="field"><label for="session-method">Método</label><select id="session-method" name="paymentMethod"><option value=""${selected(session.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(session.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(session.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(session.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(session.paymentMethod, "mbway")}>MB WAY</option></select></div>
-  </div><p class="form-footnote">Numa sessão avulsa é criado o respetivo movimento financeiro. Numa sessão incluída num pacote é descontada uma utilização sem duplicar a receita.</p></fieldset></div>`;
+  </div><p class="form-footnote">A sessão avulsa cria um recebimento pago ou pendente. A sessão incluída num pacote apenas desconta uma utilização; não altera quantas sessões já foram pagas.</p></fieldset></div>`;
 }
 
 function updatePackageTotalPreview() {
@@ -746,6 +826,32 @@ function updatePackageTotalPreview() {
   const total = Math.max(0, Number(form.elements.totalSessions?.value) || 0) * Math.max(0, Number(form.elements.pricePerSession?.value) || 0);
   const output = form.querySelector("#package-total-preview");
   if (output) output.textContent = formatCurrency(total);
+  const sessionCount = Math.max(0, Math.floor(Number(form.elements.initialPaymentSessions?.value) || 0));
+  const initialInput = form.elements.initialPaymentSessions;
+  if (initialInput) initialInput.max = String(Math.max(1, Math.floor(Number(form.elements.totalSessions?.value) || 1)));
+  const initialOutput = form.querySelector("#package-initial-payment-preview");
+  if (initialOutput) initialOutput.textContent = formatCurrency(sessionCount * Math.max(0, Number(form.elements.pricePerSession?.value) || 0));
+}
+
+function packagePaymentForm(payment, packageRecord, maximumSessions, currentSessions) {
+  return `<div class="form-sections"><fieldset class="form-section"><legend>Pagamento do pacote</legend><div class="payment-context"><span>Pacote contratado</span><strong>${Number(packageRecord.totalSessions) || 0} sessões × ${escapeHTML(formatCurrency(packageRecord.pricePerSession))}</strong></div><div class="form-grid form-grid--two">
+    <input type="hidden" name="packageId" value="${escapeHTML(packageRecord.id)}">
+    <input type="hidden" name="packagePrice" value="${escapeHTML(packageRecord.pricePerSession)}">
+    <div class="field"><label for="package-payment-sessions">Sessões pagas neste registo *</label><input id="package-payment-sessions" name="packageSessions" type="number" min="1" max="${escapeHTML(maximumSessions)}" step="1" required inputmode="numeric" value="${escapeHTML(currentSessions)}"><p class="field__hint">Máximo disponível: ${maximumSessions}.</p></div>
+    <div class="field"><label for="package-payment-date">Data *</label><input id="package-payment-date" name="date" type="date" required value="${escapeHTML(payment.date || localISODate())}"></div>
+    <div class="field"><label for="package-payment-status">Estado</label><select id="package-payment-status" name="status"><option value="paid"${selected(payment.status || "paid", "paid")}>Pago</option><option value="pending"${selected(payment.status, "pending")}>Pendente</option></select></div>
+    <div class="field"><label for="package-payment-method">Método</label><select id="package-payment-method" name="paymentMethod"><option value=""${selected(payment.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(payment.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(payment.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(payment.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(payment.paymentMethod, "mbway")}>MB WAY</option></select></div>
+    <div class="field field--wide"><label for="package-payment-notes">Notas</label><textarea id="package-payment-notes" name="notes" rows="3">${escapeHTML(payment.notes)}</textarea></div>
+  </div><div class="package-total-preview"><span>Valor deste pagamento</span><strong id="package-payment-preview">${escapeHTML(formatCurrency(currentSessions * (Number(packageRecord.pricePerSession) || 0)))}</strong></div><p class="form-footnote">Este registo é contabilístico. As sessões realizadas continuam a ser descontadas separadamente na área Clínica.</p></fieldset></div>`;
+}
+
+function updatePackagePaymentPreview() {
+  const form = elements.dialogBody.querySelector("#entity-form[data-entity='package-payment']");
+  if (!form) return;
+  const sessions = Math.max(0, Number(form.elements.packageSessions?.value) || 0);
+  const price = Math.max(0, Number(form.elements.packagePrice?.value) || 0);
+  const output = form.querySelector("#package-payment-preview");
+  if (output) output.textContent = formatCurrency(sessions * price);
 }
 
 function updateSessionPackageFields() {
@@ -772,14 +878,14 @@ function updateSessionPackageFields() {
     valueInput.readOnly = true;
     statusSelect.disabled = true;
     methodSelect.disabled = true;
-    if (hint) hint.textContent = `${selectedOption.dataset.remaining} utilização(ões) disponível(eis). Esta sessão não cria uma nova receita.`;
+    if (hint) hint.textContent = `${selectedOption.dataset.remaining} sessão(ões) por realizar. Esta sessão desconta uma utilização, sem criar um pagamento.`;
   } else {
     if (packageSelect?.value && selectedOption?.disabled) packageSelect.value = "";
     valueInput.readOnly = false;
     statusSelect.disabled = false;
     methodSelect.disabled = false;
     if (statusSelect.value === "package") statusSelect.value = "pending";
-    if (hint) hint.textContent = "Escolha um pacote ativo para descontar automaticamente uma utilização.";
+    if (hint) hint.textContent = "Sessão avulsa: indique o valor e se está pago ou pendente.";
   }
 }
 
@@ -828,20 +934,39 @@ async function saveEntityForm(form) {
     const entity = form.dataset.entity;
     const id = form.dataset.id || null;
     const data = Object.fromEntries(new FormData(form).entries());
-    const stores = { patient: "patients", appointment: "appointments", package: "packages", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
+    const stores = { patient: "patients", appointment: "appointments", package: "packages", "package-payment": "transactions", session: "sessions", evaluation: "evaluations", transaction: "transactions" };
     const store = stores[entity];
     const current = id ? await getById(store, id) : {};
     let record = { ...(current || {}), ...data };
+    let initialPackagePayment = null;
     if (id) record.id = id;
     if (entity === "patient") record.active = form.elements.active.checked;
     if (entity === "appointment") record.duration = Math.max(10, Number(data.duration) || 60);
     if (entity === "package") {
+      const initialPaymentSessions = Math.max(0, Math.floor(Number(data.initialPaymentSessions) || 0));
       record.patientId = data.patientId;
       record.totalSessions = Math.max(1, Math.floor(Number(data.totalSessions) || 1));
       record.pricePerSession = Math.max(0, Number(data.pricePerSession) || 0);
       record.totalAmount = Number((record.totalSessions * record.pricePerSession).toFixed(2));
+      record.status = data.status || "active";
+      if (!id) record.paymentStatus = "installments";
+      delete record.initialPaymentSessions;
+      delete record.initialPaymentDate;
+      delete record.initialPaymentStatus;
+      delete record.initialPaymentMethod;
       const used = id ? (await getAll("sessions")).filter((item) => item.packageId === id).length : 0;
       if (record.totalSessions < used) throw new Error(`Este pacote já tem ${used} sessões utilizadas.`);
+      const relatedPayments = id ? (await getAll("transactions")).filter((item) => item.packageId === id && item.type !== "expense" && item.status !== "cancelled") : [];
+      const committed = id ? packagePaymentSummary(record, relatedPayments).paidSessions + packagePaymentSummary(record, relatedPayments).pendingSessions : 0;
+      if (record.totalSessions < committed) throw new Error(`Já existem pagamentos para ${committed} sessões deste pacote.`);
+      if (id && relatedPayments.length && Number(current.pricePerSession) !== record.pricePerSession) throw new Error("O preço por sessão não pode ser alterado depois de existirem pagamentos.");
+      if (!id && initialPaymentSessions > record.totalSessions) throw new Error("O pagamento inicial excede o número de sessões do pacote.");
+      if (!id && initialPaymentSessions > 0) initialPackagePayment = {
+        packageSessions: initialPaymentSessions,
+        date: data.initialPaymentDate || record.purchaseDate,
+        status: data.initialPaymentStatus || "paid",
+        paymentMethod: data.initialPaymentMethod || "",
+      };
     }
     if (entity === "session") {
       record.painBefore = data.painBefore === "" ? null : Number(data.painBefore);
@@ -868,8 +993,27 @@ async function saveEntityForm(form) {
       record.amount = Math.abs(Number(data.amount) || 0);
       record.patientId = data.patientId || null;
     }
+    if (entity === "package-payment") {
+      const packageRecord = await getById("packages", data.packageId);
+      if (!packageRecord) throw new Error("O pacote já não existe.");
+      const packageSessions = Math.max(1, Math.floor(Number(data.packageSessions) || 0));
+      const otherPayments = (await getAll("transactions")).filter((item) => item.packageId === packageRecord.id && item.id !== id && item.type !== "expense" && item.status !== "cancelled");
+      const summary = packagePaymentSummary(packageRecord, otherPayments);
+      if (summary.paidSessions + summary.pendingSessions + packageSessions > Number(packageRecord.totalSessions) + 0.001) {
+        throw new Error("Este pagamento excede o total de sessões contratado.");
+      }
+      record = buildPackagePaymentRecord(packageRecord, {
+        ...current,
+        id: id || undefined,
+        packageSessions,
+        date: data.date,
+        status: data.status === "pending" ? "pending" : "paid",
+        paymentMethod: data.paymentMethod || "",
+        notes: data.notes || "",
+      });
+    }
     const saved = await upsert(store, record);
-    if (entity === "package") await syncPackageTransaction(saved);
+    if (entity === "package" && initialPackagePayment) await upsert("transactions", buildPackagePaymentRecord(saved, initialPackagePayment));
     if (entity === "session") await syncSessionTransaction(saved);
     closeDialog();
     showToast(id ? "Alterações guardadas." : "Registo criado.", "success");
@@ -882,6 +1026,22 @@ async function saveEntityForm(form) {
   } finally {
     if (submitButton) submitButton.disabled = false;
   }
+}
+
+function buildPackagePaymentRecord(packageRecord, payment) {
+  const sessions = Math.max(1, Math.floor(Number(payment.packageSessions) || 1));
+  return {
+    ...payment,
+    patientId: packageRecord.patientId,
+    packageId: packageRecord.id,
+    sessionId: null,
+    type: "income",
+    category: "Pacote",
+    description: `Pagamento de ${plural(sessions, "sessão", "sessões")} · ${packageRecord.name || "Pacote"}`,
+    packageSessions: sessions,
+    amount: Number((sessions * (Number(packageRecord.pricePerSession) || 0)).toFixed(2)),
+    automatic: true,
+  };
 }
 
 async function syncSessionTransaction(session) {
@@ -904,31 +1064,6 @@ async function syncSessionTransaction(session) {
     amount,
     status: session.paymentStatus === "paid" ? "paid" : "pending",
     paymentMethod: session.paymentMethod || "",
-    automatic: true,
-  });
-}
-
-async function syncPackageTransaction(packageRecord) {
-  const transactionId = `txn_pkg_${packageRecord.id}`;
-  const amount = Number(packageRecord.totalAmount) || (Number(packageRecord.totalSessions) || 0) * (Number(packageRecord.pricePerSession) || 0);
-  if (amount <= 0 || packageRecord.paymentStatus === "cancelled") {
-    await remove("transactions", transactionId);
-    return;
-  }
-  const existing = await getById("transactions", transactionId);
-  await upsert("transactions", {
-    ...(existing || {}),
-    id: transactionId,
-    patientId: packageRecord.patientId,
-    packageId: packageRecord.id,
-    sessionId: null,
-    date: packageRecord.purchaseDate,
-    type: "income",
-    category: "Pacote",
-    description: packageRecord.name || `Pacote de ${packageRecord.totalSessions} sessões`,
-    amount: Number(amount.toFixed(2)),
-    status: packageRecord.paymentStatus === "paid" ? "paid" : "pending",
-    paymentMethod: packageRecord.paymentMethod || "",
     automatic: true,
   });
 }
@@ -966,9 +1101,12 @@ function showToast(message, type = "info", duration = 4200) {
 
 async function deleteRecord(store, id) {
   if (store === "packages") {
-    const used = (await getAll("sessions")).filter((item) => item.packageId === id).length;
-    if (used > 0) {
-      showToast(`Este pacote já tem ${used} sessão(ões) utilizada(s). Pode editá-lo, mas não eliminá-lo.`, "warning", 6500);
+    const [used, payments] = await Promise.all([
+      getAll("sessions").then((items) => items.filter((item) => item.packageId === id).length),
+      getAll("transactions").then((items) => items.filter((item) => item.packageId === id).length),
+    ]);
+    if (used > 0 || payments > 0) {
+      showToast("Este pacote já tem sessões ou pagamentos associados. Pode editá-lo, mas não eliminá-lo.", "warning", 6500);
       return;
     }
   }
@@ -976,7 +1114,6 @@ async function deleteRecord(store, id) {
   const confirmed = await confirmAction({ title: "Eliminar registo?", message: `Esta ação elimina o registo de ${label} deste dispositivo.`, confirmLabel: "Eliminar" });
   if (!confirmed) return;
   if (store === "sessions") await remove("transactions", `txn_${id}`);
-  if (store === "packages") await remove("transactions", `txn_pkg_${id}`);
   const removed = await remove(store, id);
   showToast(removed ? "Registo eliminado." : "O registo já não existia.", removed ? "success" : "warning");
   await renderCurrentView();
@@ -985,7 +1122,7 @@ async function deleteRecord(store, id) {
 async function removePatientRecord(id) {
   const patient = await getById("patients", id);
   if (!patient) return;
-  const confirmed = await confirmAction({ title: `Eliminar ${patient.name}?`, message: "A ficha, marcações, sessões, avaliações e transações associadas serão eliminadas deste dispositivo.", confirmLabel: "Eliminar tudo" });
+  const confirmed = await confirmAction({ title: `Eliminar ${patient.name}?`, message: "A ficha, marcações, pacotes, sessões, avaliações e recebimentos associados serão eliminados deste dispositivo.", confirmLabel: "Eliminar tudo" });
   if (!confirmed) return;
   const result = await deletePatient(id, { cascade: true });
   state.patientId = null;
@@ -1179,8 +1316,9 @@ async function createDemoData() {
   await upsert("appointments", { id: "demo_app_beatriz", patientId: patients[2].id, start: `${addDays(today, 1)}T15:30`, duration: 60, type: "assessment", status: "scheduled", isDemo: true });
   const session = await upsert("sessions", { id: "demo_ses_joao", patientId: patients[1].id, date: addDays(today, -2), painBefore: 5, painAfter: 2, treatment: "Mobilização, exercício terapêutico e educação.", exercises: "Agachamento assistido: 3 × 10.", value: 45, paymentStatus: "paid", paymentMethod: "card", isDemo: true });
   await syncSessionTransaction(session);
+  const demoPackage = await upsert("packages", { id: "demo_pkg_ana", patientId: patients[0].id, name: "Pacote de 20 sessões (demonstração)", purchaseDate: today, totalSessions: 20, pricePerSession: 30, totalAmount: 600, status: "active", paymentStatus: "installments", isDemo: true });
+  await upsert("transactions", buildPackagePaymentRecord(demoPackage, { id: "demo_pay_ana", packageSessions: 10, date: today, status: "paid", paymentMethod: "mbway", isDemo: true }));
   await upsert("evaluations", { id: "demo_eva_ana", patientId: patients[0].id, date: addDays(today, -7), reason: "Dor lombar ao permanecer sentada.", diagnosis: "Lombalgia mecânica inespecífica", observation: "Sem sinais neurológicos.", mobility: "Flexão lombar limitada por dor.", goals: "Reduzir dor e retomar exercício.", plan: "Educação, controlo motor e progressão de carga.", isDemo: true });
-  await upsert("transactions", { id: "demo_tx_expense", patientId: null, date: today, type: "expense", category: "Material", description: "Material clínico (demonstração)", amount: 18.5, status: "paid", paymentMethod: "card", isDemo: true });
   await setSetting("demoLoadedAt", new Date().toISOString());
   closeDialog();
   showToast("Dados de demonstração adicionados.", "success");
@@ -1188,7 +1326,7 @@ async function createDemoData() {
 }
 
 async function clearEverything() {
-  const first = await confirmAction({ title: "Apagar todos os dados?", message: "Serão removidos pacientes, agenda, sessões, avaliações, finanças e definições deste dispositivo.", confirmLabel: "Continuar" });
+  const first = await confirmAction({ title: "Apagar todos os dados?", message: "Serão removidos pacientes, agenda, pacotes, sessões, avaliações, recebimentos e definições deste dispositivo.", confirmLabel: "Continuar" });
   if (!first) return;
   const second = await confirmAction({ title: "Confirmação final", message: "Esta operação é definitiva. Se precisar dos dados, cancele agora e crie primeiro um backup.", confirmLabel: "Apagar definitivamente" });
   if (!second) return;
@@ -1294,15 +1432,15 @@ async function handleAction(button) {
     case "delete-patient": await removePatientRecord(button.dataset.id); break;
     case "add-appointment": await openEntityForm("appointment", null, { patientId, start: `${state.agendaDate || localISODate()}T09:00` }); break;
     case "edit-appointment": await openEntityForm("appointment", button.dataset.id); break;
-    case "add-package": await openEntityForm("package", null, { patientId, purchaseDate: localISODate(), totalSessions: 6, pricePerSession: 30, paymentStatus: "paid" }); break;
+    case "add-package": await openEntityForm("package", null, { patientId, purchaseDate: localISODate(), totalSessions: 6, pricePerSession: 30, status: "active" }); break;
     case "edit-package": await openEntityForm("package", button.dataset.id); break;
+    case "add-package-payment": await openPackagePaymentForm(button.dataset.packageId); break;
+    case "edit-package-payment": await openPackagePaymentForm(button.dataset.packageId, button.dataset.id); break;
     case "add-session": await openEntityForm("session", null, { patientId, date: localISODate() }); break;
     case "edit-session": await openEntityForm("session", button.dataset.id); break;
     case "add-evaluation": await openEntityForm("evaluation", null, { patientId, date: localISODate() }); break;
     case "edit-evaluation": await openEntityForm("evaluation", button.dataset.id); break;
     case "view-evaluation": await viewEvaluation(button.dataset.id); break;
-    case "add-transaction": await openEntityForm("transaction", null, { patientId, date: localISODate(), type: "income", status: "paid" }); break;
-    case "edit-transaction": await openEntityForm("transaction", button.dataset.id); break;
     case "delete-record": await deleteRecord(button.dataset.store, button.dataset.id); break;
     case "complete-appointment": await completeAppointment(button.dataset.id); break;
     case "agenda-prev": state.agendaDate = addDays(state.agendaDate, -1); await renderCurrentView(); break;
@@ -1310,8 +1448,9 @@ async function handleAction(button) {
     case "agenda-today": state.agendaDate = localISODate(); await renderCurrentView(); break;
     case "agenda-day": state.agendaDate = button.dataset.date; await renderCurrentView(); break;
     case "clinic-tab": state.clinicTab = button.dataset.tab; await renderCurrentView(); break;
-    case "finance-prev": state.financeMonth = shiftMonth(state.financeMonth, -1); await renderCurrentView(); break;
-    case "finance-next": state.financeMonth = shiftMonth(state.financeMonth, 1); await renderCurrentView(); break;
+    case "finance-period": state.financePeriod = button.dataset.period === "year" ? "year" : "month"; await renderCurrentView(); break;
+    case "finance-prev": shiftFinancePeriod(-1); await renderCurrentView(); break;
+    case "finance-next": shiftFinancePeriod(1); await renderCurrentView(); break;
     case "open-backup": case "backup": await openBackupDialog(); break;
     case "settings": await openSettingsDialog(); break;
     case "export-backup": await exportBackup(); break;
@@ -1384,7 +1523,8 @@ function bindEvents() {
   });
 
   elements.dialogBody.addEventListener("input", (event) => {
-    if (["package-sessions", "package-price"].includes(event.target.id)) updatePackageTotalPreview();
+    if (["package-sessions", "package-price", "package-initial-sessions"].includes(event.target.id)) updatePackageTotalPreview();
+    if (event.target.id === "package-payment-sessions") updatePackagePaymentPreview();
   });
 
   elements.dialogBody.addEventListener("change", (event) => {
@@ -1413,6 +1553,16 @@ function bindEvents() {
       await renderCurrentView();
     } else if (event.target.id === "finance-month") {
       state.financeMonth = event.target.value || localISODate().slice(0, 7);
+      state.financeYear = state.financeMonth.slice(0, 4);
+      await renderCurrentView();
+    } else if (event.target.id === "finance-year") {
+      state.financeYear = String(Math.max(2000, Math.min(2100, Number(event.target.value) || Number(localISODate().slice(0, 4)))));
+      await renderCurrentView();
+    } else if (event.target.id === "finance-patient") {
+      state.financePatientId = event.target.value || "all";
+      await renderCurrentView();
+    } else if (event.target.id === "finance-status") {
+      state.financeStatus = event.target.value || "all";
       await renderCurrentView();
     } else if (event.target.id === "theme-select") {
       const theme = event.target.value;
