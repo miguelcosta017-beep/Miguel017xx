@@ -18,7 +18,8 @@ import {
 } from "./backup.js";
 import { shareOrDownloadExcel } from "./excel.js";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
+const RECYCLE_LIMIT = 50;
 const VALID_VIEWS = new Set(["dashboard", "agenda", "patients", "clinic", "finances"]);
 const VIEW_META = Object.freeze({
   dashboard: { title: "Início", context: "Resumo da clínica" },
@@ -61,6 +62,7 @@ const state = {
   view: "dashboard",
   patientId: null,
   agendaDate: localISODate(),
+  agendaView: "day",
   agendaStatus: "all",
   clinicTab: "sessions",
   financePeriod: "month",
@@ -102,6 +104,24 @@ function addDays(dateText, amount) {
   const date = new Date(`${dateText}T12:00:00`);
   date.setDate(date.getDate() + amount);
   return localISODate(date);
+}
+
+function addMonths(dateText, amount) {
+  const date = new Date(`${dateText}T12:00:00`);
+  date.setDate(1);
+  date.setMonth(date.getMonth() + amount);
+  return localISODate(date);
+}
+
+function startOfWeek(dateText) {
+  const date = new Date(`${dateText}T12:00:00`);
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return localISODate(date);
+}
+
+function dateRange(start, length) {
+  return Array.from({ length }, (_, index) => addDays(start, index));
 }
 
 function escapeHTML(value) {
@@ -230,6 +250,10 @@ function isClinicalReceipt(transaction) {
   return transaction.type !== "expense" && Boolean(transaction.sessionId || transaction.packageId);
 }
 
+function isOverdue(transaction, today = localISODate()) {
+  return transaction.status === "pending" && Boolean(transaction.dueDate) && transaction.dueDate < today;
+}
+
 function packagePaymentSummary(packageRecord, transactions) {
   const payments = sortNewest(transactions.filter((item) => item.packageId === packageRecord.id && item.type !== "expense"), "date");
   const active = payments.filter((item) => item.status !== "cancelled");
@@ -251,6 +275,50 @@ async function getSetting(key, fallback = undefined) {
 async function setSetting(key, value) {
   await upsert("settings", { key, value });
   return value;
+}
+
+async function recycleRecords(label, records) {
+  const validRecords = records.filter((item) => item?.store && item?.record);
+  if (!validRecords.length) return;
+  const current = await getSetting("recycleBin", []);
+  const recycleBin = Array.isArray(current) ? current : [];
+  recycleBin.unshift({ id: crypto.randomUUID(), label, deletedAt: new Date().toISOString(), records: validRecords });
+  await setSetting("recycleBin", recycleBin.slice(0, RECYCLE_LIMIT));
+}
+
+async function restoreRecycleEntry(entryId) {
+  const current = await getSetting("recycleBin", []);
+  const recycleBin = Array.isArray(current) ? current : [];
+  const entry = recycleBin.find((item) => item.id === entryId);
+  if (!entry) return showToast("O elemento já não está na reciclagem.", "warning");
+  const order = ["patients", "packages", "appointments", "sessions", "evaluations", "transactions"];
+  for (const store of order) {
+    for (const item of entry.records.filter((record) => record.store === store)) await upsert(store, item.record);
+  }
+  await setSetting("recycleBin", recycleBin.filter((item) => item.id !== entryId));
+  showToast("Registo recuperado da reciclagem.", "success");
+  await openRecycleBinDialog();
+  await renderCurrentView();
+}
+
+async function openRecycleBinDialog() {
+  const current = await getSetting("recycleBin", []);
+  const recycleBin = Array.isArray(current) ? current : [];
+  const rows = recycleBin.map((entry) => `<article class="recycle-row"><div><strong>${escapeHTML(entry.label || "Registo eliminado")}</strong><span>Eliminado em ${escapeHTML(formatDateTime(entry.deletedAt))} · ${plural(entry.records?.length || 0, "elemento")}</span></div><button class="button button--small button--secondary" type="button" data-action="restore-recycle" data-id="${escapeHTML(entry.id)}">Recuperar</button></article>`).join("");
+  openDialog({
+    title: "Reciclagem",
+    eyebrow: "Eliminações recuperáveis",
+    body: `<div class="recycle-list">${rows || `<div class="inline-empty inline-empty--roomy"><strong>A reciclagem está vazia</strong><span>Os próximos registos eliminados poderão ser recuperados aqui.</span></div>`}</div>`,
+    actions: `${recycleBin.length ? `<button class="button button--danger" type="button" data-action="empty-recycle">Esvaziar</button>` : ""}<button class="button button--primary" type="button" data-action="close-dialog">Fechar</button>`,
+  });
+}
+
+async function emptyRecycleBin() {
+  const confirmed = await confirmAction({ title: "Esvaziar a reciclagem?", message: "Os registos guardados na reciclagem serão eliminados definitivamente.", confirmLabel: "Esvaziar" });
+  if (!confirmed) return;
+  await setSetting("recycleBin", []);
+  showToast("Reciclagem esvaziada.", "success");
+  closeDialog();
 }
 
 async function loadCollections(...names) {
@@ -435,29 +503,46 @@ async function renderDashboard() {
 async function renderAgenda() {
   const { appointments, patients } = await loadCollections("appointments", "patients");
   const map = patientMap(patients);
-  const dayAppointments = sortOldest(appointments.filter((appointment) => {
-    const sameDay = String(appointment.start || "").slice(0, 10) === state.agendaDate;
-    return sameDay && (state.agendaStatus === "all" || appointment.status === state.agendaStatus);
-  }));
-  const counts = appointments.filter((appointment) => String(appointment.start || "").slice(0, 10) === state.agendaDate)
-    .reduce((result, appointment) => ({ ...result, [appointment.status]: (result[appointment.status] || 0) + 1 }), {});
-  const weekDays = Array.from({ length: 7 }, (_, index) => addDays(state.agendaDate, index - 3));
+  const filtered = appointments.filter((appointment) => state.agendaStatus === "all" || appointment.status === state.agendaStatus);
+  const weekStart = startOfWeek(state.agendaDate);
+  const weekDays = dateRange(weekStart, 7);
+  const monthStart = `${state.agendaDate.slice(0, 7)}-01`;
+  const monthDays = dateRange(startOfWeek(monthStart), 42);
+  const visibleDates = state.agendaView === "month" ? monthDays : state.agendaView === "week" ? weekDays : [state.agendaDate];
+  const visibleAppointments = sortOldest(filtered.filter((item) => visibleDates.includes(String(item.start || "").slice(0, 10))));
+  const counts = visibleAppointments.reduce((result, appointment) => ({ ...result, [appointment.status]: (result[appointment.status] || 0) + 1 }), {});
+  const heading = state.agendaView === "month" ? monthLabel(state.agendaDate.slice(0, 7)) : state.agendaView === "week" ? `${formatDate(weekStart)} a ${formatDate(weekDays[6])}` : formatLongDate(state.agendaDate);
+  const dayMarkup = visibleAppointments.length ? `<div class="timeline">${visibleAppointments.map((appointment) => appointmentCard(appointment, map)).join("")}</div>` : emptyState("Sem marcações", "Não há marcações com este filtro.", "add-appointment", "Nova marcação");
+  const weekMarkup = `<div class="agenda-calendar agenda-calendar--week">${weekDays.map((date) => {
+    const records = visibleAppointments.filter((item) => String(item.start || "").slice(0, 10) === date);
+    return `<section class="calendar-day${date === localISODate() ? " is-today" : ""}"><button type="button" class="calendar-day__heading" data-action="agenda-open-day" data-date="${date}"><span>${escapeHTML(new Intl.DateTimeFormat("pt-PT", { weekday: "short" }).format(parseDate(date)))}</span><strong>${date.slice(-2)}</strong></button><div class="calendar-day__records">${records.map((item) => appointmentMini(item, map)).join("") || `<span class="calendar-day__empty">Livre</span>`}</div></section>`;
+  }).join("")}</div>`;
+  const monthMarkup = `<div class="agenda-calendar agenda-calendar--month">${["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map((day) => `<span class="calendar-weekday">${day}</span>`).join("")}${monthDays.map((date) => {
+    const records = visibleAppointments.filter((item) => String(item.start || "").slice(0, 10) === date);
+    const outside = !date.startsWith(state.agendaDate.slice(0, 7));
+    return `<section class="calendar-day${outside ? " is-outside" : ""}${date === localISODate() ? " is-today" : ""}"><button type="button" class="calendar-day__heading" data-action="agenda-open-day" data-date="${date}"><strong>${Number(date.slice(-2))}</strong></button><div class="calendar-day__records">${records.slice(0, 3).map((item) => appointmentMini(item, map, true)).join("")}${records.length > 3 ? `<button type="button" class="calendar-more" data-action="agenda-open-day" data-date="${date}">+${records.length - 3}</button>` : ""}</div></section>`;
+  }).join("")}</div>`;
 
   return `<section class="view" aria-labelledby="agenda-heading">
-    <div class="view-header"><div><h2 id="agenda-heading">${escapeHTML(formatLongDate(state.agendaDate))}</h2><p>${plural(dayAppointments.length, "marcação", "marcações")} visível nesta data.</p></div><div class="view-actions"><button class="button button--primary" type="button" data-action="add-appointment">Nova marcação</button></div></div>
+    <div class="view-header"><div><h2 id="agenda-heading">${escapeHTML(heading)}</h2><p>${plural(visibleAppointments.length, "marcação", "marcações")} nesta vista.</p></div><div class="view-actions"><button class="button button--primary" type="button" data-action="add-appointment">Nova marcação</button></div></div>
     <div class="agenda-toolbar card">
-      <button class="icon-button" type="button" data-action="agenda-prev" aria-label="Dia anterior"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg></button>
+      <div class="segmented-control agenda-view-switch" role="tablist" aria-label="Vista da agenda"><button type="button" role="tab" data-action="agenda-view" data-view="day" aria-selected="${state.agendaView === "day"}" class="${state.agendaView === "day" ? "is-active" : ""}">Dia</button><button type="button" role="tab" data-action="agenda-view" data-view="week" aria-selected="${state.agendaView === "week"}" class="${state.agendaView === "week" ? "is-active" : ""}">Semana</button><button type="button" role="tab" data-action="agenda-view" data-view="month" aria-selected="${state.agendaView === "month"}" class="${state.agendaView === "month" ? "is-active" : ""}">Mês</button></div>
+      <button class="icon-button" type="button" data-action="agenda-prev" aria-label="Período anterior"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg></button>
       <label class="date-control"><span class="visually-hidden">Data da agenda</span><input id="agenda-date" type="date" value="${escapeHTML(state.agendaDate)}"></label>
-      <button class="icon-button" type="button" data-action="agenda-next" aria-label="Dia seguinte"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></button>
+      <button class="icon-button" type="button" data-action="agenda-next" aria-label="Período seguinte"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></button>
       <button class="button button--small button--ghost" type="button" data-action="agenda-today">Hoje</button>
       <label class="compact-select"><span>Estado</span><select id="agenda-status">
         <option value="all"${selected(state.agendaStatus, "all")}>Todos</option><option value="scheduled"${selected(state.agendaStatus, "scheduled")}>Agendadas</option><option value="confirmed"${selected(state.agendaStatus, "confirmed")}>Confirmadas</option><option value="completed"${selected(state.agendaStatus, "completed")}>Concluídas</option><option value="cancelled"${selected(state.agendaStatus, "cancelled")}>Canceladas</option>
       </select></label>
     </div>
-    <div class="day-strip" aria-label="Dias próximos">${weekDays.map((date) => `<button class="day-button${date === state.agendaDate ? " is-active" : ""}" type="button" data-action="agenda-day" data-date="${date}" aria-pressed="${date === state.agendaDate}"><small>${escapeHTML(new Intl.DateTimeFormat("pt-PT", { weekday: "short" }).format(parseDate(date)))}</small><strong>${date.slice(-2)}</strong></button>`).join("")}</div>
+    ${state.agendaView === "day" ? `<div class="day-strip" aria-label="Dias da semana">${weekDays.map((date) => `<button class="day-button${date === state.agendaDate ? " is-active" : ""}" type="button" data-action="agenda-day" data-date="${date}" aria-pressed="${date === state.agendaDate}"><small>${escapeHTML(new Intl.DateTimeFormat("pt-PT", { weekday: "short" }).format(parseDate(date)))}</small><strong>${date.slice(-2)}</strong></button>`).join("")}</div>` : ""}
     <div class="agenda-summary"><span class="badge">${counts.scheduled || 0} agendadas</span><span class="badge badge--info">${counts.confirmed || 0} confirmadas</span><span class="badge badge--success">${counts.completed || 0} concluídas</span></div>
-    ${dayAppointments.length ? `<div class="timeline">${dayAppointments.map((appointment) => appointmentCard(appointment, map)).join("")}</div>` : emptyState("Sem marcações", "Não há marcações com este filtro.", "add-appointment", "Nova marcação")}
+    ${state.agendaView === "month" ? monthMarkup : state.agendaView === "week" ? weekMarkup : dayMarkup}
   </section>`;
+}
+
+function appointmentMini(appointment, map, compact = false) {
+  return `<button type="button" class="calendar-appointment status-${escapeHTML(appointment.status)}" data-action="edit-appointment" data-id="${escapeHTML(appointment.id)}"><strong>${escapeHTML(formatTime(appointment.start))}</strong><span>${escapeHTML(patientDisplay(map, appointment.patientId))}</span>${compact ? "" : `<small>${escapeHTML(appointmentTypeLabel(appointment.type))}</small>`}</button>`;
 }
 
 function appointmentCard(appointment, map, { compact = false } = {}) {
@@ -465,9 +550,9 @@ function appointmentCard(appointment, map, { compact = false } = {}) {
   return `<article class="appointment appointment--${escapeHTML(appointment.type || "session")}">
     <time class="appointment__time" datetime="${escapeHTML(appointment.start)}">${escapeHTML(formatTime(appointment.start))}</time>
     <div class="appointment__content">
-      <div class="appointment__header"><div><h3 class="appointment__title">${escapeHTML(name)}</h3><p class="appointment__meta">${escapeHTML(appointmentTypeLabel(appointment.type))} · ${Number(appointment.duration) || 60} min${appointment.room ? ` · ${escapeHTML(appointment.room)}` : ""}</p></div><span class="status-badge status-badge--${escapeHTML(appointment.status)}">${escapeHTML(statusLabel(appointment.status))}</span></div>
+      <div class="appointment__header"><div><button class="link-button appointment__title" type="button" data-action="open-patient" data-id="${escapeHTML(appointment.patientId)}">${escapeHTML(name)}</button><p class="appointment__meta">${escapeHTML(appointmentTypeLabel(appointment.type))} · ${Number(appointment.duration) || 60} min${appointment.room ? ` · ${escapeHTML(appointment.room)}` : ""}</p></div><span class="status-badge status-badge--${escapeHTML(appointment.status)}">${escapeHTML(statusLabel(appointment.status))}</span></div>
       ${appointment.notes && !compact ? `<p class="record-note">${escapeHTML(appointment.notes)}</p>` : ""}
-      ${!compact ? `<div class="inline-actions inline-actions--end"><button class="button button--small button--ghost" type="button" data-action="edit-appointment" data-id="${escapeHTML(appointment.id)}">Editar</button>${!["completed", "cancelled"].includes(appointment.status) ? `<button class="button button--small button--secondary" type="button" data-action="complete-appointment" data-id="${escapeHTML(appointment.id)}">Concluir</button>` : ""}<button class="button button--small button--ghost text-danger" type="button" data-action="delete-record" data-store="appointments" data-id="${escapeHTML(appointment.id)}">Eliminar</button></div>` : ""}
+      ${!compact ? `<div class="inline-actions inline-actions--end"><button class="button button--small button--ghost" type="button" data-action="edit-appointment" data-id="${escapeHTML(appointment.id)}">Editar</button>${!["completed", "cancelled"].includes(appointment.status) ? `<button class="button button--small button--secondary" type="button" data-action="complete-appointment" data-id="${escapeHTML(appointment.id)}">Concluir e criar sessão</button>` : ""}<button class="button button--small button--ghost text-danger" type="button" data-action="delete-record" data-store="appointments" data-id="${escapeHTML(appointment.id)}">Eliminar</button></div>` : ""}
     </div>
   </article>`;
 }
@@ -503,9 +588,17 @@ async function renderPatientDetail(patientId) {
   const evaluations = sortNewest(collections.evaluations.filter((item) => item.patientId === patientId));
   const transactions = sortNewest(collections.transactions.filter((item) => item.patientId === patientId && isClinicalReceipt(item)));
   const received = sum(transactions.filter((item) => item.status === "paid"), (item) => item.amount);
+  const pending = sum(transactions.filter((item) => item.status === "pending"), (item) => item.amount);
   const usage = packageUsageMap(sessions);
   const packageMap = new Map(packages.map((item) => [item.id, item]));
-  const activePackages = packages.filter((item) => packageStatus(item, usage) === "active").length;
+  const activePackageRecords = packages.filter((item) => packageStatus(item, usage) === "active");
+  const activePackages = activePackageRecords.length;
+  const nextAppointment = sortOldest(appointments.filter((item) => String(item.start || "") >= new Date().toISOString().slice(0, 16) && !["completed", "cancelled"].includes(item.status)))[0];
+  const packageOverview = activePackageRecords.map((item) => {
+    const payment = packagePaymentSummary(item, transactions);
+    const used = usage.get(item.id) || 0;
+    return `<div class="patient-package-summary"><strong>${escapeHTML(item.name || "Pacote")}</strong><span>${used}/${Number(item.totalSessions) || 0} realizadas · ${Number.isInteger(payment.paidSessions) ? payment.paidSessions : payment.paidSessions.toFixed(1)} pagas · ${escapeHTML(formatCurrency(payment.pendingAmount))} pendente</span></div>`;
+  }).join("");
 
   return `<section class="view patient-detail" aria-labelledby="patient-heading">
     <button class="back-button" type="button" data-action="back-to-patients"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg>Pacientes</button>
@@ -514,8 +607,9 @@ async function renderPatientDetail(patientId) {
       <div class="patient-hero__main"><div class="patient-hero__title"><h2 id="patient-heading">${escapeHTML(patient.name)}</h2><span class="status-badge status-badge--${patient.active === false ? "inactive" : "active"}">${patient.active === false ? "Inativo" : "Ativo"}</span></div><p>${escapeHTML([patient.phone, patient.email].filter(Boolean).join(" · ") || "Sem contactos registados")}</p></div>
       <div class="patient-hero__actions"><button class="button button--secondary" type="button" data-action="edit-patient" data-id="${escapeHTML(patient.id)}">Editar ficha</button><button class="icon-button text-danger" type="button" data-action="delete-patient" data-id="${escapeHTML(patient.id)}" aria-label="Eliminar ficha"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6" /></svg></button></div>
     </article>
-    <div class="metrics-grid patient-metrics">${metricCard("Sessões", String(sessions.length))}${metricCard("Pacotes ativos", String(activePackages))}${metricCard("Avaliações", String(evaluations.length))}${metricCard("Marcações", String(appointments.length))}${metricCard("Total recebido", formatCurrency(received))}</div>
-    <div class="patient-actions"><button class="button button--primary" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Nova sessão</button><button class="button button--secondary" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Novo pacote</button><button class="button button--secondary" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Nova avaliação</button><button class="button button--secondary" type="button" data-action="add-appointment" data-patient-id="${escapeHTML(patient.id)}">Marcar</button></div>
+    <div class="metrics-grid patient-metrics">${metricCard("Sessões", String(sessions.length), sessions[0] ? `Última: ${formatDate(sessions[0].date)}` : "Sem sessões")}${metricCard("Pacotes ativos", String(activePackages))}${metricCard("Avaliações", String(evaluations.length), evaluations[0] ? `Última: ${formatDate(evaluations[0].date)}` : "Sem avaliações")}${metricCard("Recebido", formatCurrency(received))}${metricCard("Pendente", formatCurrency(pending), transactions.some((item) => isOverdue(item)) ? "Inclui valores em atraso" : "Por receber", transactions.some((item) => isOverdue(item)) ? "warning" : "")}</div>
+    <article class="card patient-overview"><header class="card__header"><div><p class="eyebrow">Resumo atual</p><h3>Situação do paciente</h3></div></header><div class="card__body"><div class="patient-overview-grid"><div><span>Próxima marcação</span><strong>${nextAppointment ? escapeHTML(formatDateTime(nextAppointment.start)) : "Sem marcação"}</strong></div><div><span>Última sessão</span><strong>${sessions[0] ? escapeHTML(formatDate(sessions[0].date)) : "Sem sessão"}</strong></div><div><span>Última avaliação</span><strong>${evaluations[0] ? escapeHTML(formatDate(evaluations[0].date)) : "Sem avaliação"}</strong></div></div>${packageOverview ? `<div class="patient-package-summaries">${packageOverview}</div>` : `<p class="muted">Sem pacote ativo.</p>`}</div></article>
+    <div class="patient-actions"><button class="button button--primary" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Nova sessão</button><button class="button button--secondary" type="button" data-action="add-package" data-patient-id="${escapeHTML(patient.id)}">Novo pacote</button><button class="button button--secondary" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(patient.id)}">Nova avaliação</button><button class="button button--secondary" type="button" data-action="add-appointment" data-patient-id="${escapeHTML(patient.id)}">Marcar</button><button class="button button--ghost" type="button" data-action="patient-statement" data-patient-id="${escapeHTML(patient.id)}">Extrato / imprimir</button></div>
     <div class="view-grid view-grid--sidebar">
       <div class="card-stack">
         <article class="card"><header class="card__header"><div><p class="eyebrow">Histórico clínico</p><h3>Sessões</h3></div><button class="button button--small button--ghost" type="button" data-action="add-session" data-patient-id="${escapeHTML(patient.id)}">Adicionar</button></header><div class="card__body">${sessions.length ? sessions.slice(0, 8).map((session) => sessionCard(session, new Map([[patient.id, patient]]), packageMap, usage)).join("") : `<div class="inline-empty"><span>Sem sessões registadas.</span></div>`}</div></article>
@@ -550,8 +644,8 @@ function sessionCard(session, map, packages = new Map(), usage = new Map()) {
     : "";
   return `<article class="clinical-card card">
     <div class="clinical-card__date"><strong>${escapeHTML(String(session.date || "").slice(-2) || "—")}</strong><small>${escapeHTML(new Intl.DateTimeFormat("pt-PT", { month: "short" }).format(parseDate(session.date) || new Date()))}</small></div>
-    <div class="clinical-card__main"><div class="clinical-card__heading"><button type="button" class="link-button" data-action="open-patient" data-id="${escapeHTML(session.patientId)}">${escapeHTML(patientDisplay(map, session.patientId))}</button><span class="status-badge status-badge--${session.paymentStatus === "paid" ? "paid" : session.paymentStatus === "package" ? "package" : "pending"}">${escapeHTML(statusLabel(session.paymentStatus))}</span></div><p>${escapeHTML(session.treatment || "Sessão sem descrição de tratamento")}</p><div class="clinical-card__meta"><span>Dor: ${session.painBefore ?? "—"} → ${session.painAfter ?? "—"}</span><span>${formatCurrency(session.value)}</span>${packageMeta ? `<span>${escapeHTML(packageMeta)}</span>` : ""}</div></div>
-    <div class="clinical-card__actions"><button class="icon-button" type="button" data-action="edit-session" data-id="${escapeHTML(session.id)}" aria-label="Editar sessão"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="sessions" data-id="${escapeHTML(session.id)}" aria-label="Eliminar sessão"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
+    <div class="clinical-card__main"><div class="clinical-card__heading"><button type="button" class="link-button" data-action="open-patient" data-id="${escapeHTML(session.patientId)}">${escapeHTML(patientDisplay(map, session.patientId))}</button><span class="status-badge status-badge--${session.paymentStatus === "paid" ? "paid" : session.paymentStatus === "package" ? "package" : "pending"}">${escapeHTML(statusLabel(session.paymentStatus))}</span></div><p>${escapeHTML(session.treatment || "Sessão sem descrição de tratamento")}</p>${session.progress ? `<p class="clinical-progress"><strong>Evolução:</strong> ${escapeHTML(session.progress)}</p>` : ""}<div class="clinical-card__meta"><span>Dor: ${session.painBefore ?? "—"} → ${session.painAfter ?? "—"}</span><span>${formatCurrency(session.value)}</span>${packageMeta ? `<span>${escapeHTML(packageMeta)}</span>` : ""}</div></div>
+    <div class="clinical-card__actions"><button class="icon-button" type="button" data-action="duplicate-session" data-id="${escapeHTML(session.id)}" aria-label="Duplicar sessão"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button><button class="icon-button" type="button" data-action="edit-session" data-id="${escapeHTML(session.id)}" aria-label="Editar sessão"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="sessions" data-id="${escapeHTML(session.id)}" aria-label="Eliminar sessão"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
   </article>`;
 }
 
@@ -561,7 +655,7 @@ function packageCard(packageRecord, usage, transactions = []) {
   const status = packageStatus(packageRecord, usage);
   const payment = packagePaymentSummary(packageRecord, transactions);
   const paidSessions = Math.min(Number(packageRecord.totalSessions) || 0, payment.paidSessions);
-  const history = payment.payments.slice(0, 4).map((item) => `<div class="package-payment-row"><span><strong>${escapeHTML(formatCurrency(item.amount))}</strong><small>${escapeHTML(formatDate(item.date))}${item.packageSessions ? ` · ${escapeHTML(plural(Number(item.packageSessions), "sessão", "sessões"))}` : ""}</small></span><span class="package-payment-row__end"><span class="status-badge status-badge--${escapeHTML(item.status)}">${escapeHTML(statusLabel(item.status))}</span><button class="icon-button" type="button" data-action="edit-package-payment" data-id="${escapeHTML(item.id)}" data-package-id="${escapeHTML(packageRecord.id)}" aria-label="Editar pagamento"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="transactions" data-id="${escapeHTML(item.id)}" aria-label="Eliminar pagamento"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1-14h8l1-14" /></svg></button></span></div>`).join("");
+  const history = payment.payments.map((item) => `<div class="package-payment-row${isOverdue(item) ? " is-overdue" : ""}"><span><strong>${escapeHTML(formatCurrency(item.amount))}</strong><small>${escapeHTML(formatDate(item.date))}${item.packageSessions ? ` · ${escapeHTML(plural(Number(item.packageSessions), "sessão", "sessões"))}` : ""}${item.dueDate ? ` · vence ${escapeHTML(formatDate(item.dueDate))}` : ""}</small></span><span class="package-payment-row__end"><span class="status-badge status-badge--${isOverdue(item) ? "overdue" : escapeHTML(item.status)}">${isOverdue(item) ? "Em atraso" : escapeHTML(statusLabel(item.status))}</span>${item.status === "pending" ? `<button class="button button--small button--ghost" type="button" data-action="mark-payment-paid" data-id="${escapeHTML(item.id)}">Dar como pago</button>` : ""}<button class="icon-button" type="button" data-action="edit-package-payment" data-id="${escapeHTML(item.id)}" data-package-id="${escapeHTML(packageRecord.id)}" aria-label="Editar pagamento"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="transactions" data-id="${escapeHTML(item.id)}" aria-label="Eliminar pagamento"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1-14h8l1-14" /></svg></button></span></div>`).join("");
   return `<article class="package-card">
     <header class="package-card__header"><div><strong>${escapeHTML(packageRecord.name || `Pacote de ${packageRecord.totalSessions} sessões`)}</strong><small>${escapeHTML(formatCurrency(packageRecord.pricePerSession))}/sessão · total ${escapeHTML(formatCurrency(payment.totalAmount))}</small></div><span class="status-badge status-badge--${status}">${status === "completed" ? "Concluído" : status === "cancelled" ? "Anulado" : "Ativo"}</span></header>
     <div class="package-stat-grid"><div><span>Realizadas</span><strong>${used} / ${Number(packageRecord.totalSessions) || 0}</strong><small>${remaining} disponíveis</small></div><div><span>Pagas</span><strong>${Number.isInteger(paidSessions) ? paidSessions : paidSessions.toFixed(1)} / ${Number(packageRecord.totalSessions) || 0}</strong><small>${escapeHTML(formatCurrency(payment.paidAmount))} recebido</small></div></div>
@@ -575,13 +669,13 @@ function packageCard(packageRecord, usage, transactions = []) {
 function evaluationCard(evaluation, map) {
   return `<article class="clinical-card card">
     <div class="clinical-card__date"><strong>${escapeHTML(String(evaluation.date || "").slice(-2) || "—")}</strong><small>${escapeHTML(new Intl.DateTimeFormat("pt-PT", { month: "short" }).format(parseDate(evaluation.date) || new Date()))}</small></div>
-    <div class="clinical-card__main"><div class="clinical-card__heading"><button type="button" class="link-button" data-action="open-patient" data-id="${escapeHTML(evaluation.patientId)}">${escapeHTML(patientDisplay(map, evaluation.patientId))}</button><span class="badge badge--info">Avaliação</span></div><p>${escapeHTML(evaluation.reason || evaluation.diagnosis || "Avaliação clínica")}</p><div class="clinical-card__meta"><span>${escapeHTML(evaluation.diagnosis || "Sem diagnóstico indicado")}</span></div></div>
-    <div class="clinical-card__actions"><button class="icon-button" type="button" data-action="view-evaluation" data-id="${escapeHTML(evaluation.id)}" aria-label="Ver avaliação"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></svg></button><button class="icon-button" type="button" data-action="edit-evaluation" data-id="${escapeHTML(evaluation.id)}" aria-label="Editar avaliação"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="evaluations" data-id="${escapeHTML(evaluation.id)}" aria-label="Eliminar avaliação"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
+    <div class="clinical-card__main"><div class="clinical-card__heading"><button type="button" class="link-button" data-action="open-patient" data-id="${escapeHTML(evaluation.patientId)}">${escapeHTML(patientDisplay(map, evaluation.patientId))}</button><span class="badge badge--info">${evaluation.parentEvaluationId ? "Reavaliação" : "Avaliação"}</span></div><p>${escapeHTML(evaluation.reason || evaluation.diagnosis || "Avaliação clínica")}</p><div class="clinical-card__meta"><span>${escapeHTML(evaluation.diagnosis || "Sem diagnóstico indicado")}</span></div></div>
+    <div class="clinical-card__actions"><button class="icon-button" type="button" data-action="add-evaluation" data-patient-id="${escapeHTML(evaluation.patientId)}" data-parent-id="${escapeHTML(evaluation.id)}" aria-label="Criar reavaliação"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button><button class="icon-button" type="button" data-action="view-evaluation" data-id="${escapeHTML(evaluation.id)}" aria-label="Ver avaliação"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></svg></button><button class="icon-button" type="button" data-action="edit-evaluation" data-id="${escapeHTML(evaluation.id)}" aria-label="Editar avaliação"><svg viewBox="0 0 24 24"><path d="m4 20 4-.8L19 8.2a2 2 0 0 0-3-3L5 16.2Z" /></svg></button><button class="icon-button text-danger" type="button" data-action="delete-record" data-store="evaluations" data-id="${escapeHTML(evaluation.id)}" aria-label="Eliminar avaliação"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14" /></svg></button></div>
   </article>`;
 }
 
 async function renderFinances() {
-  const { transactions, patients } = await loadCollections("transactions", "patients");
+  const { transactions, patients, sessions } = await loadCollections("transactions", "patients", "sessions");
   const map = patientMap(patients);
   const periodKey = state.financePeriod === "year" ? state.financeYear : state.financeMonth;
   const periodLabel = state.financePeriod === "year" ? `Ano ${state.financeYear}` : monthLabel(state.financeMonth);
@@ -591,6 +685,8 @@ async function renderFinances() {
   const visibleReceipts = sortNewest(patientReceipts.filter((item) => state.financeStatus === "all" || item.status === state.financeStatus));
   const paid = sum(patientReceipts.filter((item) => item.status === "paid"), (item) => item.amount);
   const pending = sum(patientReceipts.filter((item) => item.status === "pending"), (item) => item.amount);
+  const overdue = patientReceipts.filter((item) => isOverdue(item));
+  const periodSessions = sessions.filter((item) => String(item.date || "").startsWith(periodKey) && (state.financePatientId === "all" || item.patientId === state.financePatientId));
   const patientFilterOptions = [...patients].sort((a, b) => String(a.name).localeCompare(String(b.name), "pt-PT")).map((patient) => `<option value="${escapeHTML(patient.id)}"${selected(state.financePatientId, patient.id)}>${escapeHTML(patient.name)}</option>`).join("");
   const annualRows = state.financePeriod === "year" ? Array.from({ length: 12 }, (_, index) => {
     const month = `${state.financeYear}-${String(index + 1).padStart(2, "0")}`;
@@ -600,13 +696,14 @@ async function renderFinances() {
     return `<tr><th scope="row">${escapeHTML(monthLabel(month).replace(` de ${state.financeYear}`, ""))}</th><td>${escapeHTML(formatCurrency(monthlyPaid))}</td><td>${escapeHTML(formatCurrency(monthlyPending))}</td><td>${escapeHTML(formatCurrency(monthlyPaid + monthlyPending))}</td></tr>`;
   }).join("") : "";
   return `<section class="view" aria-labelledby="finances-heading">
-    <div class="view-header"><div><h2 id="finances-heading">Recebimentos</h2><p>Dashboard dos pagamentos registados nas sessões e nos pacotes.</p></div></div>
+    <div class="view-header"><div><h2 id="finances-heading">Recebimentos</h2><p>Dashboard dos pagamentos registados nas sessões e nos pacotes.</p></div><div class="view-actions"><button class="button button--secondary" type="button" data-action="export-filtered-excel">Exportar este relatório</button></div></div>
     <div class="finance-dashboard-filters card">
       <div class="segmented-control" role="tablist" aria-label="Período"><button type="button" role="tab" data-action="finance-period" data-period="month" aria-selected="${state.financePeriod === "month"}" class="${state.financePeriod === "month" ? "is-active" : ""}">Mensal</button><button type="button" role="tab" data-action="finance-period" data-period="year" aria-selected="${state.financePeriod === "year"}" class="${state.financePeriod === "year" ? "is-active" : ""}">Anual</button></div>
       <div class="finance-period-control"><button class="icon-button" type="button" data-action="finance-prev" aria-label="Período anterior"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg></button>${state.financePeriod === "month" ? `<label><span>Mês</span><input id="finance-month" type="month" value="${escapeHTML(state.financeMonth)}"></label>` : `<label><span>Ano</span><input id="finance-year" type="number" min="2000" max="2100" step="1" inputmode="numeric" value="${escapeHTML(state.financeYear)}"></label>`}<button class="icon-button" type="button" data-action="finance-next" aria-label="Período seguinte"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></button><strong>${escapeHTML(periodLabel)}</strong></div>
       <div class="finance-filter-grid"><label><span>Paciente</span><select id="finance-patient"><option value="all"${selected(state.financePatientId, "all")}>Todos os pacientes</option>${patientFilterOptions}</select></label><label><span>Estado</span><select id="finance-status"><option value="all"${selected(state.financeStatus, "all")}>Pagos e pendentes</option><option value="paid"${selected(state.financeStatus, "paid")}>Pago</option><option value="pending"${selected(state.financeStatus, "pending")}>Pendente</option></select></label></div>
     </div>
-    <div class="metrics-grid finance-metrics">${metricCard("Recebido", formatCurrency(paid), periodLabel, "success")}${metricCard("Pendente", formatCurrency(pending), "Por receber", "warning")}${metricCard("Total previsto", formatCurrency(paid + pending), "Pago + pendente")}${metricCard("Registos", String(patientReceipts.length), plural(patientReceipts.length, "recebimento"))}</div>
+    <div class="metrics-grid finance-metrics">${metricCard("Recebido", formatCurrency(paid), periodLabel, "success")}${metricCard("Pendente", formatCurrency(pending), overdue.length ? `${plural(overdue.length, "pagamento")} em atraso` : "Por receber", "warning")}${metricCard("Total previsto", formatCurrency(paid + pending), "Pago + pendente")}${metricCard("Sessões realizadas", String(periodSessions.length), periodLabel)}${metricCard("Registos", String(patientReceipts.length), plural(patientReceipts.length, "recebimento"))}</div>
+    <article class="card report-summary-card"><header class="card__header"><div><p class="eyebrow">Resumo do período</p><h3>${escapeHTML(periodLabel)}</h3></div></header><div class="card__body"><dl class="report-summary-list"><div><dt>Sessões realizadas</dt><dd>${periodSessions.length}</dd></div><div><dt>Recebimentos pagos</dt><dd>${patientReceipts.filter((item) => item.status === "paid").length}</dd></div><div><dt>Pagamentos pendentes</dt><dd>${patientReceipts.filter((item) => item.status === "pending").length}</dd></div><div><dt>Pagamentos em atraso</dt><dd>${overdue.length}</dd></div></dl></div></article>
     ${state.financePeriod === "year" ? `<article class="card finance-year-card"><header class="card__header"><div><p class="eyebrow">Histórico mensal</p><h3>${escapeHTML(state.financeYear)}</h3></div></header><div class="card__body card__body--flush"><div class="table-scroll"><table class="finance-history-table"><thead><tr><th>Mês</th><th>Pago</th><th>Pendente</th><th>Total</th></tr></thead><tbody>${annualRows}</tbody></table></div></div></article>` : ""}
     <article class="card"><header class="card__header"><div><p class="eyebrow">${escapeHTML(periodLabel)}</p><h3>Histórico de recebimentos</h3></div><span class="badge">${plural(visibleReceipts.length, "registo")}</span></header><div class="card__body card__body--flush">${visibleReceipts.length ? `<div class="transaction-list">${visibleReceipts.map((transaction) => transactionRow(transaction, map)).join("")}</div>` : `<div class="inline-empty inline-empty--roomy"><strong>Sem recebimentos neste filtro</strong><span>Os pagamentos são criados na sessão avulsa ou no pacote do paciente.</span></div>`}</div></article>
   </section>`;
@@ -636,10 +733,11 @@ function shiftFinancePeriod(amount) {
 
 function transactionRow(transaction, map) {
   const automaticLabel = transaction.packageId ? `${transaction.packageSessions ? `${plural(Number(transaction.packageSessions), "sessão", "sessões")} · ` : ""}Pacote` : "Sessão avulsa";
-  return `<article class="transaction-row">
+  const overdue = isOverdue(transaction);
+  return `<article class="transaction-row${overdue ? " is-overdue" : ""}">
     <span class="transaction-row__icon transaction-row__icon--income" aria-hidden="true">+</span>
-    <div class="transaction-row__main"><strong>${escapeHTML(transaction.description || transaction.category || "Recebimento")}</strong><span>${escapeHTML(formatDate(transaction.date))}${transaction.patientId ? ` · ${escapeHTML(patientDisplay(map, transaction.patientId))}` : ""}${automaticLabel ? ` · ${automaticLabel}` : ""}</span></div>
-    <div class="transaction-row__amount"><strong class="money--positive">+${escapeHTML(formatCurrency(transaction.amount))}</strong><span class="status-badge status-badge--${escapeHTML(transaction.status)}">${escapeHTML(statusLabel(transaction.status))}</span></div>
+    <div class="transaction-row__main"><strong>${escapeHTML(transaction.description || transaction.category || "Recebimento")}</strong><span>${escapeHTML(formatDate(transaction.date))}${transaction.patientId ? ` · ${escapeHTML(patientDisplay(map, transaction.patientId))}` : ""}${automaticLabel ? ` · ${automaticLabel}` : ""}${transaction.dueDate ? ` · vence ${escapeHTML(formatDate(transaction.dueDate))}` : ""}</span></div>
+    <div class="transaction-row__amount"><strong class="money--positive">+${escapeHTML(formatCurrency(transaction.amount))}</strong><span class="status-badge status-badge--${overdue ? "overdue" : escapeHTML(transaction.status)}">${overdue ? "Em atraso" : escapeHTML(statusLabel(transaction.status))}</span>${transaction.status === "pending" ? `<button class="button button--small button--ghost" type="button" data-action="mark-payment-paid" data-id="${escapeHTML(transaction.id)}">Dar como pago</button>` : ""}</div>
   </article>`;
 }
 
@@ -670,12 +768,13 @@ function formActions(label = "Guardar") {
 async function openEntityForm(entity, id = null, defaults = {}) {
   const storeMap = { patient: "patients", appointment: "appointments", package: "packages", session: "sessions", evaluation: "evaluations" };
   const storeName = storeMap[entity];
-  const [record, patients, appointments, packages, sessions] = await Promise.all([
+  const [record, patients, appointments, packages, sessions, evaluations] = await Promise.all([
     id ? getById(storeName, id) : Promise.resolve(null),
     entity === "patient" ? Promise.resolve([]) : getAll("patients"),
     entity === "session" ? getAll("appointments") : Promise.resolve([]),
     entity === "session" ? getAll("packages") : Promise.resolve([]),
     ["session", "package"].includes(entity) ? getAll("sessions") : Promise.resolve([]),
+    entity === "evaluation" ? getAll("evaluations") : Promise.resolve([]),
   ]);
   if (id && !record) {
     showToast("O registo já não existe.", "warning");
@@ -692,7 +791,7 @@ async function openEntityForm(entity, id = null, defaults = {}) {
     appointment: [id ? "Editar marcação" : "Nova marcação", appointmentForm(value, patients)],
     package: [id ? "Editar pacote" : "Novo pacote", packageForm(value, patients, sessions, { editing: Boolean(id) })],
     session: [id ? "Editar sessão" : "Nova sessão", sessionForm(value, patients, appointments, packages, sessions)],
-    evaluation: [id ? "Editar avaliação" : "Nova avaliação", evaluationForm(value, patients)],
+    evaluation: [id ? "Editar avaliação" : value.parentEvaluationId ? "Nova reavaliação" : "Nova avaliação", evaluationForm(value, patients, evaluations)],
   }[entity];
   openDialog({
     title: config[0],
@@ -702,6 +801,15 @@ async function openEntityForm(entity, id = null, defaults = {}) {
   });
   if (entity === "session") updateSessionPackageFields();
   if (entity === "package") updatePackageTotalPreview();
+  if (entity === "evaluation" && value.parentEvaluationId) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const parentSelect = elements.dialogBody.querySelector("#evaluation-parent");
+    const parentOption = parentSelect?.querySelector(`option[value="${CSS.escape(value.parentEvaluationId)}"]`);
+    if (parentOption) {
+      parentOption.selected = true;
+      parentSelect.value = value.parentEvaluationId;
+    }
+  }
 }
 
 async function openPackagePaymentForm(packageId, paymentId = null) {
@@ -777,6 +885,7 @@ function packageForm(packageRecord, patients, sessions, { editing = false } = {}
     <div class="field"><label for="package-initial-sessions">Sessões pagas agora</label><input id="package-initial-sessions" name="initialPaymentSessions" type="number" min="0" max="${escapeHTML(totalSessions)}" step="1" inputmode="numeric" value="0"><p class="field__hint">Pode deixar a zero e registar o pagamento mais tarde.</p></div>
     <div class="field"><label for="package-initial-date">Data do pagamento</label><input id="package-initial-date" name="initialPaymentDate" type="date" value="${escapeHTML(packageRecord.purchaseDate || localISODate())}"></div>
     <div class="field"><label for="package-initial-status">Estado</label><select id="package-initial-status" name="initialPaymentStatus"><option value="paid">Pago</option><option value="pending">Pendente</option></select></div>
+    <div class="field"><label for="package-initial-due">Data prevista, se pendente</label><input id="package-initial-due" name="initialPaymentDueDate" type="date"></div>
     <div class="field"><label for="package-initial-method">Método</label><select id="package-initial-method" name="initialPaymentMethod"><option value="">Não indicado</option><option value="cash">Numerário</option><option value="card">Cartão</option><option value="transfer">Transferência</option><option value="mbway">MB WAY</option></select></div>
   </div><div class="package-total-preview"><span>Valor deste pagamento</span><strong id="package-initial-payment-preview">${escapeHTML(formatCurrency(0))}</strong></div><p class="form-footnote">Este pagamento não altera o número de sessões realizadas. A utilização só é descontada quando registar cada sessão clínica.</p></fieldset>`}</div>`;
 }
@@ -806,11 +915,13 @@ function sessionForm(session, patients, appointments, packages, sessions) {
     <div class="field"><label for="pain-after">Dor depois (0–10)</label><input id="pain-after" name="painAfter" type="number" min="0" max="10" step="1" value="${escapeHTML(session.painAfter ?? "")}"></div>
     <div class="field field--wide"><label for="session-treatment">Tratamento realizado *</label><textarea id="session-treatment" name="treatment" rows="5" required placeholder="Técnicas, resposta e evolução…">${escapeHTML(session.treatment)}</textarea></div>
     <div class="field field--wide"><label for="session-exercises">Exercícios / plano domiciliário</label><textarea id="session-exercises" name="exercises" rows="4" placeholder="Exercícios, séries, frequência e progressões…">${escapeHTML(session.exercises)}</textarea></div>
+    <div class="field field--wide"><label for="session-progress">Evolução do paciente</label><textarea id="session-progress" name="progress" rows="3" placeholder="Resposta ao tratamento, evolução desde a sessão anterior…">${escapeHTML(session.progress)}</textarea></div>
     <div class="field field--wide"><label for="session-notes">Notas adicionais</label><textarea id="session-notes" name="notes" rows="3">${escapeHTML(session.notes)}</textarea></div>
   </div></fieldset><fieldset class="form-section"><legend>Modalidade e recebimento</legend><div class="form-grid form-grid--three">
     <div class="field field--wide"><label for="session-package">Sessão avulsa ou incluída em pacote</label><select id="session-package" name="packageId"><option value="">Sessão avulsa</option>${packageOptions}</select><p class="field__hint" id="session-package-hint">Escolha um pacote ativo para descontar uma sessão realizada. Os pagamentos do pacote são registados separadamente.</p></div>
     <div class="field"><label for="session-value">Valor (€)</label><input id="session-value" name="value" type="number" min="0" step="0.01" inputmode="decimal" value="${escapeHTML(session.value ?? "")}"></div>
     <div class="field"><label for="session-payment">Estado</label><select id="session-payment" name="paymentStatus"><option value="pending"${selected(session.paymentStatus || "pending", "pending")}>Pendente</option><option value="paid"${selected(session.paymentStatus, "paid")}>Pago</option><option value="waived"${selected(session.paymentStatus, "waived")}>Isento</option><option value="package"${selected(session.paymentStatus, "package")}>Incluída no pacote</option></select></div>
+    <div class="field"><label for="session-due-date">Data prevista, se pendente</label><input id="session-due-date" name="dueDate" type="date" value="${escapeHTML(session.dueDate)}"></div>
     <div class="field"><label for="session-method">Método</label><select id="session-method" name="paymentMethod"><option value=""${selected(session.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(session.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(session.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(session.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(session.paymentMethod, "mbway")}>MB WAY</option></select></div>
   </div><p class="form-footnote">A sessão avulsa cria um recebimento pago ou pendente. A sessão incluída num pacote apenas desconta uma utilização; não altera quantas sessões já foram pagas.</p></fieldset></div>`;
 }
@@ -835,6 +946,7 @@ function packagePaymentForm(payment, packageRecord, maximumSessions, currentSess
     <div class="field"><label for="package-payment-sessions">Sessões pagas neste registo *</label><input id="package-payment-sessions" name="packageSessions" type="number" min="1" max="${escapeHTML(maximumSessions)}" step="1" required inputmode="numeric" value="${escapeHTML(currentSessions)}"><p class="field__hint">Máximo disponível: ${maximumSessions}.</p></div>
     <div class="field"><label for="package-payment-date">Data *</label><input id="package-payment-date" name="date" type="date" required value="${escapeHTML(payment.date || localISODate())}"></div>
     <div class="field"><label for="package-payment-status">Estado</label><select id="package-payment-status" name="status"><option value="paid"${selected(payment.status || "paid", "paid")}>Pago</option><option value="pending"${selected(payment.status, "pending")}>Pendente</option></select></div>
+    <div class="field"><label for="package-payment-due">Data prevista, se pendente</label><input id="package-payment-due" name="dueDate" type="date" value="${escapeHTML(payment.dueDate)}"></div>
     <div class="field"><label for="package-payment-method">Método</label><select id="package-payment-method" name="paymentMethod"><option value=""${selected(payment.paymentMethod, "")}>Não indicado</option><option value="cash"${selected(payment.paymentMethod, "cash")}>Numerário</option><option value="card"${selected(payment.paymentMethod, "card")}>Cartão</option><option value="transfer"${selected(payment.paymentMethod, "transfer")}>Transferência</option><option value="mbway"${selected(payment.paymentMethod, "mbway")}>MB WAY</option></select></div>
     <div class="field field--wide"><label for="package-payment-notes">Notas</label><textarea id="package-payment-notes" name="notes" rows="3">${escapeHTML(payment.notes)}</textarea></div>
   </div><div class="package-total-preview"><span>Valor deste pagamento</span><strong id="package-payment-preview">${escapeHTML(formatCurrency(currentSessions * (Number(packageRecord.pricePerSession) || 0)))}</strong></div><p class="form-footnote">Este registo é contabilístico. As sessões realizadas continuam a ser descontadas separadamente na área Clínica.</p></fieldset></div>`;
@@ -865,6 +977,7 @@ function updateSessionPackageFields() {
   const valueInput = form.elements.value;
   const statusSelect = form.elements.paymentStatus;
   const methodSelect = form.elements.paymentMethod;
+  const dueInput = form.elements.dueDate;
   const hint = form.querySelector("#session-package-hint");
   if (hasPackage) {
     valueInput.value = selectedOption.dataset.price || "0";
@@ -873,21 +986,26 @@ function updateSessionPackageFields() {
     valueInput.readOnly = true;
     statusSelect.disabled = true;
     methodSelect.disabled = true;
+    dueInput.disabled = true;
     if (hint) hint.textContent = `${selectedOption.dataset.remaining} sessão(ões) por realizar. Esta sessão desconta uma utilização, sem criar um pagamento.`;
   } else {
     if (packageSelect?.value && selectedOption?.disabled) packageSelect.value = "";
     valueInput.readOnly = false;
     statusSelect.disabled = false;
     methodSelect.disabled = false;
+    dueInput.disabled = statusSelect.value !== "pending";
     if (statusSelect.value === "package") statusSelect.value = "pending";
     if (hint) hint.textContent = "Sessão avulsa: indique o valor e se está pago ou pendente.";
   }
 }
 
-function evaluationForm(evaluation, patients) {
+function evaluationForm(evaluation, patients, evaluations = []) {
+  const patientNames = patientMap(patients);
+  const parentOptions = sortNewest(evaluations.filter((item) => item.id !== evaluation.id && (!evaluation.patientId || item.patientId === evaluation.patientId))).map((item) => `<option value="${escapeHTML(item.id)}"${selected(item.id, evaluation.parentEvaluationId)}>${escapeHTML(`${formatDate(item.date)} — ${patientDisplay(patientNames, item.patientId)} — ${item.reason || "Avaliação"}`)}</option>`).join("");
   return `<div class="form-sections"><fieldset class="form-section"><legend>Identificação</legend><div class="form-grid form-grid--two">
     <div class="field"><label for="evaluation-patient">Paciente *</label><select id="evaluation-patient" name="patientId" required><option value="">Selecionar…</option>${patientOptions(patients, evaluation.patientId)}</select></div>
     <div class="field"><label for="evaluation-date">Data *</label><input id="evaluation-date" name="date" type="date" required value="${escapeHTML(evaluation.date || localISODate())}"></div>
+    <div class="field field--wide"><label for="evaluation-parent">Avaliação inicial associada</label><select id="evaluation-parent" name="parentEvaluationId"><option value="">Nova avaliação inicial</option>${parentOptions}</select><p class="field__hint">Selecione uma avaliação anterior quando este registo for uma reavaliação.</p></div>
     <div class="field field--wide"><label for="evaluation-reason">Motivo / queixa principal *</label><textarea id="evaluation-reason" name="reason" rows="3" required>${escapeHTML(evaluation.reason)}</textarea></div>
     <div class="field field--wide"><label for="evaluation-diagnosis">Diagnóstico / referência médica</label><input id="evaluation-diagnosis" name="diagnosis" value="${escapeHTML(evaluation.diagnosis)}"></div>
     <div class="field field--wide"><label for="evaluation-history">História clínica</label><textarea id="evaluation-history" name="history" rows="4">${escapeHTML(evaluation.history)}</textarea></div>
@@ -922,7 +1040,21 @@ async function saveEntityForm(form) {
     let initialPackagePayment = null;
     if (id) record.id = id;
     if (entity === "patient") record.active = form.elements.active.checked;
-    if (entity === "appointment") record.duration = Math.max(10, Number(data.duration) || 60);
+    if (entity === "appointment") {
+      record.duration = Math.max(10, Number(data.duration) || 60);
+      const start = Date.parse(record.start);
+      const end = start + record.duration * 60_000;
+      const conflicts = (await getAll("appointments")).filter((item) => {
+        if (item.id === id || item.status === "cancelled" || record.status === "cancelled") return false;
+        const otherStart = Date.parse(item.start);
+        const otherEnd = otherStart + (Math.max(10, Number(item.duration) || 60) * 60_000);
+        return Number.isFinite(start) && Number.isFinite(otherStart) && start < otherEnd && end > otherStart;
+      });
+      if (conflicts.length) {
+        const proceed = await confirmAction({ title: "Horário sobreposto", message: `Existe ${plural(conflicts.length, "marcação", "marcações")} neste horário. Quer guardar na mesma?`, confirmLabel: "Guardar na mesma", danger: false });
+        if (!proceed) return;
+      }
+    }
     if (entity === "package") {
       const initialPaymentSessions = Math.max(0, Math.floor(Number(data.initialPaymentSessions) || 0));
       record.patientId = data.patientId;
@@ -935,6 +1067,7 @@ async function saveEntityForm(form) {
       delete record.initialPaymentDate;
       delete record.initialPaymentStatus;
       delete record.initialPaymentMethod;
+      delete record.initialPaymentDueDate;
       const used = id ? (await getAll("sessions")).filter((item) => item.packageId === id).length : 0;
       if (record.totalSessions < used) throw new Error(`Este pacote já tem ${used} sessões utilizadas.`);
       const relatedPayments = id ? (await getAll("transactions")).filter((item) => item.packageId === id && item.type !== "expense" && item.status !== "cancelled") : [];
@@ -947,6 +1080,7 @@ async function saveEntityForm(form) {
         date: data.initialPaymentDate || record.purchaseDate,
         status: data.initialPaymentStatus || "paid",
         paymentMethod: data.initialPaymentMethod || "",
+        dueDate: data.initialPaymentStatus === "pending" ? (data.initialPaymentDueDate || null) : null,
       };
     }
     if (entity === "session") {
@@ -964,10 +1098,19 @@ async function saveEntityForm(form) {
         record.value = Math.max(0, Number(packageRecord.pricePerSession) || 0);
         record.paymentStatus = "package";
         record.paymentMethod = "";
+        record.dueDate = null;
       } else {
         record.value = Math.max(0, Number(data.value) || 0);
         record.paymentStatus = data.paymentStatus || "pending";
         record.paymentMethod = data.paymentMethod || "";
+        record.dueDate = record.paymentStatus === "pending" ? (data.dueDate || null) : null;
+      }
+    }
+    if (entity === "evaluation") {
+      record.parentEvaluationId = data.parentEvaluationId || null;
+      if (record.parentEvaluationId) {
+        const parent = await getById("evaluations", record.parentEvaluationId);
+        if (!parent || parent.patientId !== record.patientId || parent.id === id) throw new Error("A avaliação inicial selecionada não é válida para este paciente.");
       }
     }
     if (entity === "package-payment") {
@@ -986,6 +1129,7 @@ async function saveEntityForm(form) {
         date: data.date,
         status: data.status === "pending" ? "pending" : "paid",
         paymentMethod: data.paymentMethod || "",
+        dueDate: data.status === "pending" ? (data.dueDate || null) : null,
         notes: data.notes || "",
       });
     }
@@ -1041,6 +1185,7 @@ async function syncSessionTransaction(session) {
     amount,
     status: session.paymentStatus === "paid" ? "paid" : "pending",
     paymentMethod: session.paymentMethod || "",
+    dueDate: session.paymentStatus === "pending" ? (session.dueDate || null) : null,
     automatic: true,
   });
 }
@@ -1088,22 +1233,31 @@ async function deleteRecord(store, id) {
     }
   }
   const label = STORE_LABELS[store]?.toLocaleLowerCase("pt-PT") || "registo";
-  const confirmed = await confirmAction({ title: "Eliminar registo?", message: `Esta ação elimina o registo de ${label} deste dispositivo.`, confirmLabel: "Eliminar" });
+  const confirmed = await confirmAction({ title: "Mover para a reciclagem?", message: `O registo de ${label} poderá ser recuperado nas Definições.`, confirmLabel: "Mover para reciclagem" });
   if (!confirmed) return;
+  const record = await getById(store, id);
+  const linkedTransaction = store === "sessions" ? await getById("transactions", `txn_${id}`) : null;
+  if (record) await recycleRecords(`${STORE_LABELS[store] || "Registo"}${record.name ? ` · ${record.name}` : ""}`, [{ store, record }, linkedTransaction ? { store: "transactions", record: linkedTransaction } : null]);
   if (store === "sessions") await remove("transactions", `txn_${id}`);
   const removed = await remove(store, id);
-  showToast(removed ? "Registo eliminado." : "O registo já não existia.", removed ? "success" : "warning");
+  showToast(removed ? "Registo movido para a reciclagem." : "O registo já não existia.", removed ? "success" : "warning");
   await renderCurrentView();
 }
 
 async function removePatientRecord(id) {
   const patient = await getById("patients", id);
   if (!patient) return;
-  const confirmed = await confirmAction({ title: `Eliminar ${patient.name}?`, message: "A ficha, marcações, pacotes, sessões, avaliações e recebimentos associados serão eliminados deste dispositivo.", confirmLabel: "Eliminar tudo" });
+  const confirmed = await confirmAction({ title: `Mover ${patient.name} para a reciclagem?`, message: "A ficha e todos os registos associados poderão ser recuperados em conjunto nas Definições.", confirmLabel: "Mover tudo" });
   if (!confirmed) return;
+  const collections = await loadCollections("appointments", "packages", "sessions", "evaluations", "transactions");
+  const records = [{ store: "patients", record: patient }];
+  for (const [store, items] of Object.entries(collections)) {
+    for (const record of items.filter((item) => item.patientId === id)) records.push({ store, record });
+  }
+  await recycleRecords(`Paciente · ${patient.name}`, records);
   const result = await deletePatient(id, { cascade: true });
   state.patientId = null;
-  showToast(result.found ? "Ficha e registos associados eliminados." : "A ficha já não existia.", "success");
+  showToast(result.found ? "Ficha movida para a reciclagem." : "A ficha já não existia.", "success");
   await renderCurrentView();
 }
 
@@ -1177,6 +1331,51 @@ async function exportExcel() {
   }
 }
 
+function filterReportData(data, { patientId = "all", periodKey = "", status = "all" } = {}) {
+  const patientMatches = (item) => patientId === "all" || item.patientId === patientId || item.id === patientId;
+  const periodMatches = (item, field) => !periodKey || String(item[field] || "").startsWith(periodKey);
+  const patients = data.patients.filter((item) => patientId === "all" || item.id === patientId);
+  return {
+    ...data,
+    patients,
+    appointments: data.appointments.filter((item) => patientMatches(item) && periodMatches(item, "start")),
+    packages: data.packages.filter(patientMatches),
+    sessions: data.sessions.filter((item) => patientMatches(item) && periodMatches(item, "date")),
+    evaluations: data.evaluations.filter((item) => patientMatches(item) && periodMatches(item, "date")),
+    transactions: data.transactions.filter((item) => patientMatches(item) && periodMatches(item, "date") && (status === "all" || item.status === status)),
+  };
+}
+
+async function exportFilteredExcel({ patientId = state.financePatientId, periodKey = state.financePeriod === "year" ? state.financeYear : state.financeMonth, status = state.financeStatus } = {}) {
+  const data = filterReportData(await readAllData(), { patientId, periodKey, status });
+  const patient = patientId === "all" ? null : data.patients.find((item) => item.id === patientId);
+  const safeName = String(patient?.name || "todos").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+  const filename = `fisio-if-relatorio-${periodKey || "completo"}-${safeName || "paciente"}.xlsx`;
+  const result = await shareOrDownloadExcel({ data, filename });
+  if (result.ok) showToast("Relatório Excel criado.", "success");
+}
+
+async function openPatientStatement(patientId) {
+  const data = await readAllData();
+  const patient = data.patients.find((item) => item.id === patientId);
+  if (!patient) return showToast("O paciente já não existe.", "warning");
+  const sessions = sortNewest(data.sessions.filter((item) => item.patientId === patientId));
+  const packages = sortNewest(data.packages.filter((item) => item.patientId === patientId), "purchaseDate");
+  const transactions = sortNewest(data.transactions.filter((item) => item.patientId === patientId && isClinicalReceipt(item)));
+  const usage = packageUsageMap(sessions);
+  const received = sum(transactions.filter((item) => item.status === "paid"), (item) => item.amount);
+  const pending = sum(transactions.filter((item) => item.status === "pending"), (item) => item.amount);
+  const sessionRows = sessions.map((item) => `<tr><td>${escapeHTML(formatDate(item.date))}</td><td>${escapeHTML(item.treatment || "Sessão")}</td><td>${item.packageId ? "Pacote" : "Avulsa"}</td></tr>`).join("");
+  const paymentRows = transactions.map((item) => `<tr><td>${escapeHTML(formatDate(item.date))}</td><td>${escapeHTML(item.description || "Recebimento")}</td><td>${escapeHTML(formatCurrency(item.amount))}</td><td>${isOverdue(item) ? "Em atraso" : escapeHTML(statusLabel(item.status))}</td></tr>`).join("");
+  const packageRows = packages.map((item) => { const payment = packagePaymentSummary(item, transactions); return `<tr><td>${escapeHTML(item.name || "Pacote")}</td><td>${usage.get(item.id) || 0}/${Number(item.totalSessions) || 0}</td><td>${Number.isInteger(payment.paidSessions) ? payment.paidSessions : payment.paidSessions.toFixed(1)}</td><td>${escapeHTML(formatCurrency(payment.pendingAmount))}</td></tr>`; }).join("");
+  openDialog({
+    title: `Extrato · ${patient.name}`,
+    eyebrow: `Emitido em ${formatDate(localISODate())}`,
+    body: `<article class="patient-statement statement-print"><header><h2>FISIO IF</h2><div><strong>${escapeHTML(patient.name)}</strong><span>${escapeHTML([patient.phone, patient.email].filter(Boolean).join(" · ") || "Sem contacto")}</span></div></header><div class="statement-totals"><span>Recebido <strong>${escapeHTML(formatCurrency(received))}</strong></span><span>Pendente <strong>${escapeHTML(formatCurrency(pending))}</strong></span><span>Sessões <strong>${sessions.length}</strong></span></div><section><h3>Pacotes</h3><div class="table-scroll"><table><thead><tr><th>Pacote</th><th>Realizadas</th><th>Pagas</th><th>Pendente</th></tr></thead><tbody>${packageRows || `<tr><td colspan="4">Sem pacotes.</td></tr>`}</tbody></table></div></section><section><h3>Sessões</h3><div class="table-scroll"><table><thead><tr><th>Data</th><th>Tratamento</th><th>Modalidade</th></tr></thead><tbody>${sessionRows || `<tr><td colspan="3">Sem sessões.</td></tr>`}</tbody></table></div></section><section><h3>Recebimentos</h3><div class="table-scroll"><table><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Estado</th></tr></thead><tbody>${paymentRows || `<tr><td colspan="4">Sem recebimentos.</td></tr>`}</tbody></table></div></section><footer>Documento gerado localmente pela FISIO IF. Não substitui um recibo fiscal.</footer></article>`,
+    actions: `<button class="button button--secondary" type="button" data-action="export-patient-excel" data-patient-id="${escapeHTML(patientId)}">Exportar Excel</button><button class="button button--primary" type="button" data-action="print-statement">Imprimir / guardar PDF</button>`,
+  });
+}
+
 async function validateSelectedBackup() {
   const input = elements.dialog.querySelector("#backup-file");
   const reportElement = elements.dialog.querySelector("#backup-validation");
@@ -1229,10 +1428,11 @@ async function restoreSelectedBackup() {
 }
 
 async function openSettingsDialog() {
-  const [theme, reminderDays, lastBackupAt] = await Promise.all([
+  const [theme, reminderDays, lastBackupAt, recycleBin] = await Promise.all([
     getSetting("theme", "auto"),
     getSetting("backupReminderDays", 14),
     getSetting("lastBackupAt", null),
+    getSetting("recycleBin", []),
   ]);
   const storageText = state.storagePersistent === true ? "Armazenamento persistente ativo" : state.storagePersistent === false ? "Persistência ainda não concedida" : "Estado não disponível";
   openDialog({
@@ -1242,6 +1442,7 @@ async function openSettingsDialog() {
       <section class="settings-section"><div><h3>Aparência</h3><p>Escolha o tema da aplicação neste dispositivo.</p></div><label class="compact-select"><span>Tema</span><select id="theme-select"><option value="auto"${selected(theme, "auto")}>Automático</option><option value="light"${selected(theme, "light")}>Claro</option><option value="dark"${selected(theme, "dark")}>Escuro</option></select></label></section>
       <section class="settings-section"><div><h3>Proteção do armazenamento</h3><p id="storage-status">${escapeHTML(storageText)}. O pedido reduz o risco de o navegador libertar dados locais automaticamente.</p></div><button class="button button--secondary" type="button" data-action="request-storage">Pedir persistência</button></section>
       <section class="settings-section"><div><h3>Lembrete de backup</h3><p>${lastBackupAt ? `Último backup em ${escapeHTML(formatDateTime(lastBackupAt))}.` : "Ainda não existe um backup."}</p></div><label class="compact-select"><span>Lembrar após</span><select id="backup-reminder"><option value="7"${selected(reminderDays, 7)}>7 dias</option><option value="14"${selected(reminderDays, 14)}>14 dias</option><option value="30"${selected(reminderDays, 30)}>30 dias</option><option value="90"${selected(reminderDays, 90)}>90 dias</option></select></label><button class="button button--secondary" type="button" data-action="open-backup">Abrir backup</button></section>
+      <section class="settings-section"><div><h3>Reciclagem</h3><p>${plural(Array.isArray(recycleBin) ? recycleBin.length : 0, "eliminação guardada", "eliminações guardadas")}. Mantém no máximo ${RECYCLE_LIMIT} operações.</p></div><button class="button button--secondary" type="button" data-action="open-recycle">Abrir reciclagem</button></section>
       <section class="settings-section"><div><h3>Dados de demonstração</h3><p>Adiciona pacientes e registos fictícios para testar a aplicação.</p></div><button class="button button--secondary" type="button" data-action="create-demo">Adicionar demonstração</button></section>
       <section class="settings-section settings-section--danger"><div><h3>Apagar todos os dados</h3><p>Remove definitivamente dados clínicos e preferências deste dispositivo. Exige duas confirmações.</p></div><button class="button button--danger" type="button" data-action="clear-all-data">Apagar tudo</button></section>
       <footer class="about-app"><strong>FISIO IF ${APP_VERSION}</strong><span>Offline · sem conta · sem sincronização · sem custos de serviço</span></footer>
@@ -1415,15 +1616,19 @@ async function handleAction(button) {
     case "edit-package-payment": await openPackagePaymentForm(button.dataset.packageId, button.dataset.id); break;
     case "add-session": await openEntityForm("session", null, { patientId, date: localISODate() }); break;
     case "edit-session": await openEntityForm("session", button.dataset.id); break;
-    case "add-evaluation": await openEntityForm("evaluation", null, { patientId, date: localISODate() }); break;
+    case "add-evaluation": await openEntityForm("evaluation", null, { patientId, parentEvaluationId: button.getAttribute("data-parent-id") || null, date: localISODate() }); break;
     case "edit-evaluation": await openEntityForm("evaluation", button.dataset.id); break;
     case "view-evaluation": await viewEvaluation(button.dataset.id); break;
     case "delete-record": await deleteRecord(button.dataset.store, button.dataset.id); break;
+    case "duplicate-session": await duplicateSession(button.dataset.id); break;
+    case "mark-payment-paid": await markPaymentPaid(button.dataset.id); break;
     case "complete-appointment": await completeAppointment(button.dataset.id); break;
-    case "agenda-prev": state.agendaDate = addDays(state.agendaDate, -1); await renderCurrentView(); break;
-    case "agenda-next": state.agendaDate = addDays(state.agendaDate, 1); await renderCurrentView(); break;
+    case "agenda-view": state.agendaView = ["day", "week", "month"].includes(button.dataset.view) ? button.dataset.view : "day"; await renderCurrentView(); break;
+    case "agenda-prev": shiftAgenda(-1); await renderCurrentView(); break;
+    case "agenda-next": shiftAgenda(1); await renderCurrentView(); break;
     case "agenda-today": state.agendaDate = localISODate(); await renderCurrentView(); break;
     case "agenda-day": state.agendaDate = button.dataset.date; await renderCurrentView(); break;
+    case "agenda-open-day": state.agendaDate = button.dataset.date; state.agendaView = "day"; await renderCurrentView(); break;
     case "clinic-tab": state.clinicTab = button.dataset.tab; await renderCurrentView(); break;
     case "finance-period": state.financePeriod = button.dataset.period === "year" ? "year" : "month"; await renderCurrentView(); break;
     case "finance-prev": shiftFinancePeriod(-1); await renderCurrentView(); break;
@@ -1432,9 +1637,16 @@ async function handleAction(button) {
     case "settings": await openSettingsDialog(); break;
     case "export-backup": await exportBackup(); break;
     case "export-excel": await exportExcel(); break;
+    case "export-filtered-excel": await exportFilteredExcel(); break;
+    case "export-patient-excel": await exportFilteredExcel({ patientId: button.dataset.patientId, periodKey: "", status: "all" }); break;
+    case "patient-statement": await openPatientStatement(button.dataset.patientId || patientId); break;
+    case "print-statement": window.print(); break;
     case "validate-backup-file": await validateSelectedBackup(); break;
     case "restore-backup": await restoreSelectedBackup(); break;
     case "request-storage": await requestPersistentStorage(); break;
+    case "open-recycle": await openRecycleBinDialog(); break;
+    case "restore-recycle": await restoreRecycleEntry(button.dataset.id); break;
+    case "empty-recycle": await emptyRecycleBin(); break;
     case "create-demo": await createDemoData(); break;
     case "clear-all-data": await clearEverything(); break;
     case "install-app": await installApp(); break;
@@ -1452,6 +1664,35 @@ async function completeAppointment(id) {
   await renderCurrentView();
   const createSession = await confirmAction({ title: "Marcação concluída", message: "Quer registar agora a sessão clínica e o respetivo pagamento?", confirmLabel: "Criar sessão", danger: false });
   if (createSession) await openEntityForm("session", null, { patientId: appointment.patientId, appointmentId: appointment.id, date: String(appointment.start).slice(0, 10) });
+}
+
+function shiftAgenda(amount) {
+  if (state.agendaView === "month") state.agendaDate = addMonths(state.agendaDate, amount);
+  else state.agendaDate = addDays(state.agendaDate, amount * (state.agendaView === "week" ? 7 : 1));
+}
+
+async function duplicateSession(id) {
+  const session = await getById("sessions", id);
+  if (!session) return showToast("A sessão já não existe.", "warning");
+  await openEntityForm("session", null, {
+    patientId: session.patientId,
+    date: localISODate(),
+    packageId: session.packageId || null,
+    treatment: session.treatment || "",
+    exercises: session.exercises || "",
+    notes: session.notes || "",
+    value: session.value,
+    paymentStatus: session.packageId ? "package" : "pending",
+  });
+}
+
+async function markPaymentPaid(id) {
+  const transaction = await getById("transactions", id);
+  if (!transaction) return showToast("O pagamento já não existe.", "warning");
+  if (transaction.status !== "pending") return;
+  await upsert("transactions", { ...transaction, status: "paid", date: localISODate(), dueDate: null });
+  showToast("Pagamento marcado como pago.", "success");
+  await renderCurrentView();
 }
 
 async function navigate(view) {
@@ -1505,7 +1746,7 @@ function bindEvents() {
   });
 
   elements.dialogBody.addEventListener("change", (event) => {
-    if (["session-patient", "session-package"].includes(event.target.id)) updateSessionPackageFields();
+    if (["session-patient", "session-package", "session-payment"].includes(event.target.id)) updateSessionPackageFields();
   });
 
   elements.viewRoot.addEventListener("input", (event) => {

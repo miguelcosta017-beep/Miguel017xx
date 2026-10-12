@@ -1,6 +1,6 @@
-# FISIO IF — versão 1.1.0 offline
+# FISIO IF — versão 1.4.0 offline
 
-FISIO IF é uma aplicação web instalável (PWA), orientada primeiro ao iPhone e utilizável também no MacBook. A aplicação gere pacientes, sessões, agenda, avaliações e finanças sem conta, subscrição, servidor de dados ou sincronização.
+FISIO IF é uma aplicação web instalável (PWA), orientada primeiro ao iPhone e utilizável também no MacBook. A aplicação gere pacientes, pacotes de sessões, sessões avulsas, agenda, avaliações e recebimentos sem conta, subscrição, servidor de dados ou sincronização.
 
 Os registos ficam no `IndexedDB` do navegador de cada dispositivo. A transferência entre iPhone e MacBook é manual: exporta-se um backup integral num dispositivo e importa-se no outro.
 
@@ -9,12 +9,19 @@ Os registos ficam no `IndexedDB` do navegador de cada dispositivo. A transferên
 ## O que está incluído
 
 - base de pacientes;
-- registo de sessões e estados de pagamento;
+- pacotes de sessões, com contadores independentes de sessões realizadas, pagas e pendentes;
+- pagamentos faseados de pacotes, sem confundir sessões pagas com sessões já realizadas;
+- registo de sessões avulsas ou incluídas num pacote;
 - agenda local;
+- agenda com vistas diária, semanal e mensal, estados por cor e aviso de sobreposição;
 - avaliações clínicas;
-- visão financeira;
+- reavaliações associadas à avaliação inicial e duplicação de sessões anteriores;
+- dashboard de recebimentos com filtros mensal, anual, por paciente e por estado pago/pendente;
+- datas previstas, identificação de pagamentos em atraso e passagem rápida para pago;
+- resumo completo por paciente e extrato imprimível;
+- reciclagem local para recuperar eliminações acidentais;
 - exportação integral para um ficheiro de backup;
-- exportação para um ficheiro Excel (`.xlsx`) com folhas separadas para resumo, pacientes, agenda, sessões, avaliações e finanças;
+- exportação integral ou filtrada para um ficheiro Excel (`.xlsx`) com folhas separadas para resumo, pacientes, pacotes, agenda, sessões, avaliações e recebimentos;
 - importação/restauro do backup;
 - interface adaptada ao iPhone e ao MacBook;
 - funcionamento offline depois do primeiro carregamento completo;
@@ -52,20 +59,27 @@ python3 -m http.server 8080
 
 Se o comando disponível for `python` ou `py`, usar esse nome em vez de `python3`. Depois abrir [http://localhost:8080](http://localhost:8080) no Safari.
 
-`localhost` é aceite para desenvolvimento. Num iPhone, o endereço local do Mac (por exemplo, `http://192.168...`) não equivale a `localhost` e normalmente não permite ativar o service worker. Para instalar e testar no iPhone é necessário disponibilizar estes ficheiros num endereço HTTPS alcançável pelo telefone. Esta entrega não publica nem altera qualquer site.
+`localhost` é aceite para desenvolvimento. Num iPhone, o endereço local do Mac (por exemplo, `http://192.168...`) não equivale a `localhost` e normalmente não permite ativar o service worker. Para instalar e testar no iPhone é necessário disponibilizar estes ficheiros num endereço HTTPS alcançável pelo telefone.
 
 ## Teste funcional sugerido
 
 Usar apenas dados fictícios durante o teste inicial.
 
 1. Abrir a aplicação com ligação e percorrer todos os ecrãs.
-2. Criar um paciente, uma avaliação, uma sessão, um evento de agenda e um movimento financeiro.
-3. Fechar e voltar a abrir; confirmar que os registos permanecem.
-4. Depois de um carregamento completo, desligar a rede e voltar a abrir a aplicação.
-5. Exportar um backup e confirmar que o ficheiro foi guardado fora da aplicação.
-6. Criar uma exportação Excel e confirmar que as seis folhas abrem corretamente.
-7. Num perfil de navegador ou dispositivo de teste, importar o backup JSON e confirmar todos os totais e registos.
-8. Criar um segundo backup depois do restauro e guardá-lo separadamente.
+2. Criar um paciente e um pacote de 20 sessões a 30 €, registando o pagamento inicial de 10 sessões.
+3. Criar uma sessão incluída nesse pacote e confirmar que o pacote mostra 1 sessão realizada e 10 sessões pagas.
+4. Registar um segundo pagamento de 10 sessões como pendente e confirmar no dashboard que aparecem 300 € recebidos e 300 € pendentes.
+5. Atribuir uma data prevista anterior à data atual e confirmar o estado “Em atraso”; depois usar “Dar como pago”.
+6. Criar uma avaliação, abrir uma reavaliação associada e testar a duplicação de uma sessão.
+7. Criar um evento de agenda, alternar entre Dia/Semana/Mês e confirmar o aviso ao sobrepor horários.
+8. Eliminar um registo, recuperá-lo na Reciclagem e confirmar que reaparece.
+9. Abrir o extrato do paciente e testar a impressão/guardar como PDF.
+10. Fechar e voltar a abrir; confirmar que os registos permanecem.
+11. Depois de um carregamento completo, desligar a rede e voltar a abrir a aplicação.
+12. Exportar um backup e confirmar que o ficheiro foi guardado fora da aplicação.
+13. Criar uma exportação Excel integral e outra filtrada; confirmar que as sete folhas abrem corretamente.
+14. Num perfil de navegador ou dispositivo de teste, importar o backup JSON e confirmar todos os totais e registos.
+15. Criar um segundo backup depois do restauro e guardá-lo separadamente.
 
 ## Atualizações da aplicação
 

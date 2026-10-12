@@ -46,6 +46,310 @@
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* FISIO IF 1.4 — agenda, relatórios e segurança local */
+.agenda-view-switch {
+  flex: 0 0 auto;
+}
+
+.agenda-calendar {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.agenda-calendar--week {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.agenda-calendar--month {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.calendar-weekday {
+  color: var(--color-text-soft);
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 0 0.35rem;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.calendar-day {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  min-height: 9rem;
+  overflow: hidden;
+}
+
+.agenda-calendar--month .calendar-day {
+  min-height: 7.5rem;
+}
+
+.calendar-day.is-today {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+.calendar-day.is-outside {
+  opacity: 0.45;
+}
+
+.calendar-day__heading {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  padding: 0.65rem;
+  width: 100%;
+}
+
+.calendar-day__heading span {
+  color: var(--color-text-soft);
+  font-size: 0.78rem;
+  text-transform: capitalize;
+}
+
+.calendar-day__records {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0 0.45rem 0.55rem;
+}
+
+.calendar-appointment {
+  background: var(--color-surface-soft);
+  border: 0;
+  border-left: 3px solid var(--color-primary);
+  border-radius: 0.5rem;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 0.05rem;
+  padding: 0.45rem;
+  text-align: left;
+}
+
+.calendar-appointment.status-confirmed { border-left-color: var(--color-info); }
+.calendar-appointment.status-completed { border-left-color: var(--color-success); }
+.calendar-appointment.status-cancelled { border-left-color: var(--color-danger); opacity: 0.65; }
+.calendar-appointment span,
+.calendar-appointment small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-day__empty,
+.calendar-more {
+  color: var(--color-text-soft);
+  font-size: 0.78rem;
+  padding: 0.35rem;
+}
+
+.calendar-more {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.patient-overview {
+  margin-top: 1rem;
+}
+
+.patient-overview-grid,
+.report-summary-list {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.patient-overview-grid > div,
+.report-summary-list > div {
+  background: var(--color-surface-soft);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.8rem;
+}
+
+.patient-overview-grid span,
+.report-summary-list dt,
+.patient-package-summary span {
+  color: var(--color-text-soft);
+  font-size: 0.78rem;
+}
+
+.patient-package-summaries {
+  border-top: 1px solid var(--color-border);
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+}
+
+.patient-package-summary {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.clinical-progress {
+  background: var(--color-surface-soft);
+  border-radius: 0.55rem;
+  color: var(--color-text-soft);
+  font-size: 0.88rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.status-badge--overdue {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+}
+
+.transaction-row.is-overdue,
+.package-payment-row.is-overdue {
+  box-shadow: inset 3px 0 0 var(--color-danger);
+}
+
+.report-summary-card {
+  margin-bottom: 1rem;
+}
+
+.report-summary-list {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.report-summary-list dd {
+  font-size: 1.25rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.recycle-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.recycle-row {
+  align-items: center;
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 0.85rem;
+}
+
+.recycle-row div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.recycle-row span {
+  color: var(--color-text-soft);
+  font-size: 0.8rem;
+}
+
+.patient-statement {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.patient-statement > header {
+  align-items: end;
+  border-bottom: 2px solid var(--color-primary);
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 0.8rem;
+}
+
+.patient-statement > header div {
+  display: grid;
+  text-align: right;
+}
+
+.statement-totals {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.statement-totals span {
+  background: var(--color-surface-soft);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.8rem;
+}
+
+.patient-statement table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.patient-statement th,
+.patient-statement td {
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.55rem;
+  text-align: left;
+}
+
+.patient-statement footer {
+  color: var(--color-text-soft);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 900px) {
+  .agenda-calendar--week,
+  .agenda-calendar--month {
+    gap: 0.35rem;
+  }
+  .calendar-day { min-height: 7rem; }
+  .agenda-calendar--week { grid-template-columns: 1fr; }
+  .agenda-calendar--week .calendar-day { min-height: 0; }
+  .agenda-calendar--month .calendar-appointment span,
+  .agenda-calendar--month .calendar-appointment small { display: none; }
+  .agenda-calendar--month .calendar-appointment { padding: 0.3rem; }
+  .patient-overview-grid,
+  .report-summary-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 620px) {
+  .agenda-toolbar { align-items: stretch; flex-wrap: wrap; }
+  .agenda-view-switch { order: -1; width: 100%; }
+  .agenda-view-switch button { flex: 1; }
+  .agenda-calendar--month { font-size: 0.75rem; }
+  .agenda-calendar--month .calendar-day { border-radius: 0.55rem; min-height: 5rem; }
+  .calendar-day__heading { padding: 0.4rem; }
+  .calendar-day__records { gap: 0.2rem; padding: 0 0.25rem 0.3rem; }
+  .calendar-appointment strong { font-size: 0.7rem; }
+  .patient-overview-grid,
+  .report-summary-list,
+  .statement-totals { grid-template-columns: 1fr; }
+  .recycle-row { align-items: stretch; flex-direction: column; }
+  .patient-statement > header { align-items: start; flex-direction: column; gap: 0.6rem; }
+  .patient-statement > header div { text-align: left; }
+}
+
+@media print {
+  body > *:not(#app-dialog),
+  #app-dialog .dialog-shell > *:not(.dialog-body),
+  .dialog-header,
+  .dialog-actions { display: none !important; }
+  .dialog-shell,
+  .dialog-body,
+  .patient-statement { background: #fff !important; color: #111 !important; box-shadow: none !important; max-height: none !important; overflow: visible !important; }
+  dialog[open] { border: 0; height: auto; inset: 0; margin: 0; max-height: none; max-width: none; padding: 0; position: static; width: 100%; }
+  dialog::backdrop { display: none; }
+  .patient-statement .table-scroll { overflow: visible; }
+  .patient-statement section { break-inside: avoid; }
+}
+
 *,
 *::before,
 *::after {
@@ -3433,6 +3737,18 @@ html[data-theme="dark"] .primary-nav {
   .clinical-card__heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .package-payment-row {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-block: 0.5rem;
+  }
+
+  .package-payment-row__end {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    width: 100%;
   }
 }
 

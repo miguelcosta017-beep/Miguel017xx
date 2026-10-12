@@ -121,6 +121,8 @@ function buildSheets(input, generatedAt) {
   const receipts = data.transactions.filter((item) => item.type !== "expense" && (item.sessionId || item.packageId) && item.status !== "cancelled");
   const received = receipts.filter((item) => item.status === "paid").reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   const pending = receipts.filter((item) => item.status === "pending").reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const today = generatedAt.toISOString().slice(0, 10);
+  const overdue = receipts.filter((item) => item.status === "pending" && item.dueDate && item.dueDate < today);
   const packagePaymentSummary = (packageRecord) => {
     const price = Number(packageRecord.pricePerSession) || 0;
     const active = receipts.filter((item) => item.packageId === packageRecord.id);
@@ -141,6 +143,7 @@ function buildSheets(input, generatedAt) {
       ["Recebimentos", asInteger(receipts.length)],
       ["Recebido", asCurrency(received)],
       ["Pendente", asCurrency(pending)],
+      ["Pagamentos em atraso", asInteger(overdue.length)],
       ["Total previsto", asCurrency(received + pending)],
       ["Utilização", "Consulta e análise. Para restaurar a aplicação, use o backup JSON."],
     ] },
@@ -164,16 +167,16 @@ function buildSheets(input, generatedAt) {
       ...data.appointments.map((item) => [item.id, patientName(item.patientId), item.patientId, asDateTime(item.start), asInteger(item.duration), label("appointmentType", item.type), label("appointmentStatus", item.status), item.room, item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
     ] },
     { name: "Sessões", rows: [
-      ["ID", "Paciente", "Paciente ID", "Data", "Marcação ID", "Pacote", "Pacote ID", "Dor antes (0-10)", "Dor depois (0-10)", "Tratamento", "Exercícios / plano domiciliário", "Notas", "Valor (€)", "Estado do pagamento", "Método", "Criado em", "Atualizado em"],
-      ...data.sessions.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.appointmentId, packageNames.get(item.packageId) || "", item.packageId, item.painBefore ?? "", item.painAfter ?? "", item.treatment, item.exercises, item.notes, asCurrency(item.value), label("paymentStatus", item.paymentStatus), label("paymentMethod", item.paymentMethod), asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
+      ["ID", "Paciente", "Paciente ID", "Data", "Marcação ID", "Pacote", "Pacote ID", "Dor antes (0-10)", "Dor depois (0-10)", "Tratamento", "Evolução", "Exercícios / plano domiciliário", "Notas", "Valor (€)", "Estado do pagamento", "Data prevista", "Método", "Criado em", "Atualizado em"],
+      ...data.sessions.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.appointmentId, packageNames.get(item.packageId) || "", item.packageId, item.painBefore ?? "", item.painAfter ?? "", item.treatment, item.progress, item.exercises, item.notes, asCurrency(item.value), label("paymentStatus", item.paymentStatus), asDate(item.dueDate), label("paymentMethod", item.paymentMethod), asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
     ] },
     { name: "Avaliações", rows: [
-      ["ID", "Paciente", "Paciente ID", "Data", "Motivo / queixa principal", "Diagnóstico / referência médica", "História clínica", "Observação", "Postura / alinhamento", "Mobilidade / amplitudes", "Força / controlo motor", "Testes especiais / medidas", "Raciocínio clínico", "Objetivos", "Plano de intervenção", "Notas", "Criado em", "Atualizado em"],
-      ...data.evaluations.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.reason, item.diagnosis, item.history, item.observation, item.posture, item.mobility, item.strength, item.specialTests, item.clinicalReasoning, item.goals, item.plan, item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
+      ["ID", "Paciente", "Paciente ID", "Data", "Avaliação inicial ID", "Tipo", "Motivo / queixa principal", "Diagnóstico / referência médica", "História clínica", "Observação", "Postura / alinhamento", "Mobilidade / amplitudes", "Força / controlo motor", "Testes especiais / medidas", "Raciocínio clínico", "Objetivos", "Plano de intervenção", "Notas", "Criado em", "Atualizado em"],
+      ...data.evaluations.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.parentEvaluationId, item.parentEvaluationId ? "Reavaliação" : "Avaliação inicial", item.reason, item.diagnosis, item.history, item.observation, item.posture, item.mobility, item.strength, item.specialTests, item.clinicalReasoning, item.goals, item.plan, item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
     ] },
     { name: "Recebimentos", rows: [
-      ["ID", "Paciente", "Paciente ID", "Data", "Origem", "Sessões pagas", "Valor (€)", "Estado", "Método", "Descrição", "Sessão ID", "Pacote ID", "Notas", "Criado em", "Atualizado em"],
-      ...receipts.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.packageId ? "Pacote" : "Sessão avulsa", item.packageSessions == null ? "" : asInteger(item.packageSessions), asCurrency(item.amount), label("paymentStatus", item.status), label("paymentMethod", item.paymentMethod), item.description, item.sessionId, item.packageId, item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
+      ["ID", "Paciente", "Paciente ID", "Data", "Origem", "Sessões pagas", "Valor (€)", "Estado", "Data prevista", "Em atraso", "Método", "Descrição", "Sessão ID", "Pacote ID", "Notas", "Criado em", "Atualizado em"],
+      ...receipts.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.packageId ? "Pacote" : "Sessão avulsa", item.packageSessions == null ? "" : asInteger(item.packageSessions), asCurrency(item.amount), label("paymentStatus", item.status), asDate(item.dueDate), item.status === "pending" && item.dueDate && item.dueDate < today ? "Sim" : "Não", label("paymentMethod", item.paymentMethod), item.description, item.sessionId, item.packageId, item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
     ] },
   ];
 }

@@ -62,7 +62,7 @@ Este método é adequado ao Mac. `http://localhost:8080` no iPhone apontaria par
 5. No MacBook, abrir a FISIO IF instalada a partir do mesmo projeto.
 6. Escolher **Importar/Restaurar backup** e selecionar o ficheiro exportado.
 7. Ler a confirmação apresentada pela aplicação antes de prosseguir: o restauro pode substituir a base existente.
-8. No fim, comparar o número de pacientes, sessões, avaliações e movimentos financeiros.
+8. No fim, comparar o número de pacientes, pacotes, sessões, avaliações e recebimentos.
 9. Exportar um novo backup no MacBook e guardá-lo separadamente como prova do restauro.
 
 Também é possível fazer o percurso inverso. No iPhone, o modo exato de entrega de um download pode variar com a versão do iOS e com o contexto (Safari ou aplicação instalada); se surgir uma pré-visualização ou folha de partilha, usar **Guardar em Ficheiros**. Não assumir que o ficheiro ficou guardado sem o confirmar.
@@ -74,7 +74,9 @@ Também é possível fazer o percurso inverso. No iPhone, o modo exato de entreg
 3. No iPhone, escolher **Guardar em Ficheiros**, AirDrop ou outra opção segura da folha de partilha.
 4. Abrir o ficheiro `.xlsx` no Excel, Numbers ou aplicação compatível.
 
-O livro inclui seis folhas: **Resumo, Pacientes, Agenda, Sessões, Avaliações e Finanças**. As datas e os valores financeiros são gravados como valores próprios do Excel, permitindo ordenar, filtrar e fazer cálculos.
+O livro inclui sete folhas: **Resumo, Pacientes, Pacotes, Agenda, Sessões, Avaliações e Recebimentos**. As datas e os valores dos recebimentos são gravados como valores próprios do Excel, permitindo ordenar, filtrar e fazer cálculos.
+
+Na área **Finanças**, o botão **Exportar este relatório** respeita o período, o paciente e o estado escolhidos no dashboard. Na ficha do paciente, **Extrato / imprimir** permite consultar o histórico, imprimir ou guardar em PDF e criar um Excel apenas desse paciente.
 
 Esta exportação contém informação clínica e deve ser protegida como tal. É apenas uma cópia de consulta: não substitui o backup integral JSON e não pode ser importada para restaurar a FISIO IF.
 
@@ -125,13 +127,17 @@ O iOS não permite que esta aplicação escreva silenciosamente numa pasta arbit
 - Não introduzir dados reais num dispositivo partilhado.
 - Recordar que não há login nem encriptação adicional dentro da própria FISIO IF.
 
+### Reciclagem local
+
+Os registos eliminados individualmente e as fichas de pacientes são movidos para **Definições > Reciclagem**, onde podem ser recuperados. A reciclagem guarda no máximo 50 operações e pertence apenas ao dispositivo atual. **Esvaziar a reciclagem**, apagar todos os dados do Safari ou usar **Apagar tudo** remove essa possibilidade de recuperação; o backup integral continua a ser a proteção principal.
+
 ## Checklist mensal recomendado
 
 - Criar um backup integral.
 - Criar uma exportação Excel de consulta, se necessária, e guardá-la num local protegido.
 - Confirmar que o ficheiro abre no seletor de importação.
 - Fazer um restauro de teste num perfil/dispositivo sem dados reais.
-- Confirmar os totais de pacientes, sessões e finanças.
+- Confirmar os totais de pacientes, pacotes, sessões e recebimentos.
 - Manter pelo menos duas cópias em locais distintos e protegidos.
 - Apagar com segurança backups antigos quando a política de retenção o exigir.
 

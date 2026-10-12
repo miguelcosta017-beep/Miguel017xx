@@ -235,6 +235,14 @@ export async function validateBackup(input, { verifyChecksum = true } = {}) {
     }
   }
 
+  const evaluations = new Map(normalisedData.evaluations.map((record) => [record.id, record]));
+  for (const item of normalisedData.evaluations) {
+    if (!item.parentEvaluationId) continue;
+    const parent = evaluations.get(item.parentEvaluationId);
+    if (!parent) errors.push(`evaluations: a reavaliação ${item.id} refere uma avaliação inicial inexistente.`);
+    else if (parent.patientId !== item.patientId || parent.id === item.id) errors.push(`evaluations: a relação da reavaliação ${item.id} não é válida.`);
+  }
+
   const packages = new Map(normalisedData.packages.map((record) => [record.id, record]));
   for (const item of normalisedData.packages) {
     if (!Number.isInteger(Number(item.totalSessions)) || Number(item.totalSessions) < 1) {
