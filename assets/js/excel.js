@@ -6,7 +6,6 @@ const LABELS = Object.freeze({
   appointmentStatus: { scheduled: "Agendada", confirmed: "Confirmada", completed: "Concluída", cancelled: "Cancelada", no_show: "Faltou" },
   paymentStatus: { pending: "Pendente", paid: "Pago", package: "Incluída no pacote", waived: "Isento", cancelled: "Anulado" },
   paymentMethod: { cash: "Numerário", card: "Cartão", transfer: "Transferência", mbway: "MB WAY" },
-  transactionType: { income: "Receita", expense: "Despesa" },
 });
 
 function xmlEscape(value) {
@@ -119,9 +118,16 @@ function buildSheets(input, generatedAt) {
     if (item.packageId) usage.set(item.packageId, (usage.get(item.packageId) || 0) + 1);
   });
   const label = (group, value) => value ? (LABELS[group]?.[value] || value) : "";
-  const paid = data.transactions.filter((item) => item.status === "paid");
-  const income = paid.filter((item) => item.type === "income").reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const expenses = paid.filter((item) => item.type === "expense").reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const receipts = data.transactions.filter((item) => item.type !== "expense" && (item.sessionId || item.packageId) && item.status !== "cancelled");
+  const received = receipts.filter((item) => item.status === "paid").reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const pending = receipts.filter((item) => item.status === "pending").reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const packagePaymentSummary = (packageRecord) => {
+    const price = Number(packageRecord.pricePerSession) || 0;
+    const active = receipts.filter((item) => item.packageId === packageRecord.id);
+    const sessions = (status) => active.filter((item) => item.status === status).reduce((sum, item) => sum + (Number(item.packageSessions) || (price > 0 ? (Number(item.amount) || 0) / price : 0)), 0);
+    const amount = (status) => active.filter((item) => item.status === status).reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    return { paidSessions: sessions("paid"), pendingSessions: sessions("pending"), paidAmount: amount("paid"), pendingAmount: amount("pending") };
+  };
 
   return [
     { name: "Resumo", rows: [
@@ -132,10 +138,10 @@ function buildSheets(input, generatedAt) {
       ["Pacotes", asInteger(data.packages.length)],
       ["Sessões", asInteger(data.sessions.length)],
       ["Avaliações", asInteger(data.evaluations.length)],
-      ["Movimentos financeiros", asInteger(data.transactions.length)],
-      ["Receitas pagas", asCurrency(income)],
-      ["Despesas pagas", asCurrency(expenses)],
-      ["Saldo pago", asCurrency(income - expenses)],
+      ["Recebimentos", asInteger(receipts.length)],
+      ["Recebido", asCurrency(received)],
+      ["Pendente", asCurrency(pending)],
+      ["Total previsto", asCurrency(received + pending)],
       ["Utilização", "Consulta e análise. Para restaurar a aplicação, use o backup JSON."],
     ] },
     { name: "Pacientes", rows: [
@@ -143,12 +149,14 @@ function buildSheets(input, generatedAt) {
       ...data.patients.map((item) => [item.id, item.name, asDate(item.birthDate), item.nif, item.phone, item.email, item.address, item.emergencyContact, item.active !== false ? "Sim" : "Não", item.clinicalNotes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
     ] },
     { name: "Pacotes", rows: [
-      ["ID", "Paciente", "Paciente ID", "Nome", "Data da compra", "Sessões incluídas", "Sessões utilizadas", "Sessões disponíveis", "Preço por sessão (€)", "Total (€)", "Estado do pagamento", "Método", "Estado do pacote", "Notas", "Criado em", "Atualizado em"],
+      ["ID", "Paciente", "Paciente ID", "Nome", "Data da compra", "Sessões contratadas", "Sessões realizadas", "Sessões por realizar", "Sessões pagas", "Sessões pendentes", "Preço por sessão (€)", "Total contratado (€)", "Recebido (€)", "Pendente (€)", "Por receber (€)", "Estado do pacote", "Notas", "Criado em", "Atualizado em"],
       ...data.packages.map((item) => {
         const used = usage.get(item.id) || 0;
         const total = Number(item.totalSessions) || 0;
         const price = Number(item.pricePerSession) || 0;
-        return [item.id, patientName(item.patientId), item.patientId, item.name, asDate(item.purchaseDate), asInteger(total), asInteger(used), asInteger(Math.max(0, total - used)), asCurrency(price), asCurrency(item.totalAmount ?? total * price), label("paymentStatus", item.paymentStatus), label("paymentMethod", item.paymentMethod), item.paymentStatus === "cancelled" ? "Anulado" : used >= total && total > 0 ? "Concluído" : "Ativo", item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)];
+        const payments = packagePaymentSummary(item);
+        const contracted = Number(item.totalAmount ?? total * price) || 0;
+        return [item.id, patientName(item.patientId), item.patientId, item.name, asDate(item.purchaseDate), asInteger(total), asInteger(used), asInteger(Math.max(0, total - used)), payments.paidSessions, payments.pendingSessions, asCurrency(price), asCurrency(contracted), asCurrency(payments.paidAmount), asCurrency(payments.pendingAmount), asCurrency(Math.max(0, contracted - payments.paidAmount)), item.status === "cancelled" || item.paymentStatus === "cancelled" ? "Anulado" : used >= total && total > 0 ? "Concluído" : "Ativo", item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)];
       }),
     ] },
     { name: "Agenda", rows: [
@@ -163,9 +171,9 @@ function buildSheets(input, generatedAt) {
       ["ID", "Paciente", "Paciente ID", "Data", "Motivo / queixa principal", "Diagnóstico / referência médica", "História clínica", "Observação", "Postura / alinhamento", "Mobilidade / amplitudes", "Força / controlo motor", "Testes especiais / medidas", "Raciocínio clínico", "Objetivos", "Plano de intervenção", "Notas", "Criado em", "Atualizado em"],
       ...data.evaluations.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.reason, item.diagnosis, item.history, item.observation, item.posture, item.mobility, item.strength, item.specialTests, item.clinicalReasoning, item.goals, item.plan, item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
     ] },
-    { name: "Finanças", rows: [
-      ["ID", "Paciente", "Paciente ID", "Sessão ID", "Pacote ID", "Data", "Tipo", "Categoria", "Descrição", "Valor (€)", "Estado", "Método", "Automático", "Notas", "Criado em", "Atualizado em"],
-      ...data.transactions.map((item) => [item.id, patientName(item.patientId), item.patientId, item.sessionId, item.packageId, asDate(item.date), label("transactionType", item.type), item.category, item.description, asCurrency(item.amount), label("paymentStatus", item.status), label("paymentMethod", item.paymentMethod), item.automatic ? "Sim" : "Não", item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
+    { name: "Recebimentos", rows: [
+      ["ID", "Paciente", "Paciente ID", "Data", "Origem", "Sessões pagas", "Valor (€)", "Estado", "Método", "Descrição", "Sessão ID", "Pacote ID", "Notas", "Criado em", "Atualizado em"],
+      ...receipts.map((item) => [item.id, patientName(item.patientId), item.patientId, asDate(item.date), item.packageId ? "Pacote" : "Sessão avulsa", item.packageSessions == null ? "" : asInteger(item.packageSessions), asCurrency(item.amount), label("paymentStatus", item.status), label("paymentMethod", item.paymentMethod), item.description, item.sessionId, item.packageId, item.notes, asDateTime(item.createdAt), asDateTime(item.updatedAt)]),
     ] },
   ];
 }
